@@ -1,0 +1,195 @@
+# PyFlayer AI: a Minecraft 26.3 AI bot for Raspberry Pi (Python)
+
+PyFlayer is a Python Minecraft client library similar to [mineflayer](https://github.com/PrismarineJS/mineflayer),
+written from scratch for **Minecraft Java 26.3 (protocol 777)**. On top of it sits an AI agent driven by any
+**OpenAI-compatible API** (you set your own base URL later), with a persistent "brain" that learns every session
+and an **overnight training mode**. It downloads and runs its own **offline-mode ("cracked") server** and joins it.
+A Tkinter desktop app makes it a normal app on Raspberry Pi OS.
+
+Everything below was tested against a real 26.3 server: login, chunks, digging, placing, crafting tables,
+furnaces, pathfinding with digging, combat, scanning, the LLM tool loop and the trainer.
+
+## What it can do
+
+| Area | Details |
+|---|---|
+| Protocol | Handshake, offline login, configuration phase (registries, known packs, code of conduct, resource packs), play state, compression, keep-alive, chunk batches, 26.x one-movement-per-tick rule, LpVec3 velocities, stepped entity movement, item components |
+| World | Numpy chunk storage, block and biome palettes, block updates, **block search across about 100 blocks in ~10 ms**, block and biome census |
+| Physics | Vanilla-accurate gravity, friction, sprint jumping, step-up, slabs and stairs, water, lava, ladders, and sneak edge-guard, so the server never rejects a move |
+| Pathfinding | A* with walking, diagonals, jumping, dropping, swimming, **digging through**, digging down, **pillaring up**, **bridging**, partial paths and re-planning |
+| Interaction | Aim at blocks (picks the visible face) and entities (hitbox-aware), dig with best-tool selection and learned dig times, place blocks, use doors, levers, beds and buttons, open chests, furnaces and crafting tables |
+| Inventory | Window model, clicks, swap and shift-click, equip (hand, offhand, armor), toss, **crafting in 2x2 and 3x3 grids**, **smelting**, deposit and withdraw |
+| Combat and survival | Attack with cooldown, chase, flee, bow ballistics, creeper avoidance; reflexes fight back, pillar out of reach when hurt, eat; nights are spent in a sealed hole dug underground (or in a bed); items are recovered after a death |
+| Planner | `bot.obtain("iron_pickaxe")` works out the whole tree from the server's own recipes, tags and loot tables (mine wood → planks → table → pickaxe → stone → furnace → iron ore → smelt → craft), including tool tiers |
+| Scanner | 100-block scan: ores with nearest coordinates, trees, water and lava, stations, **biomes**, **structures** (villages, strongholds, mineshafts, dungeons, temples, monuments, ruined portals, ancient cities, trial chambers, geodes, fortresses, bastions, end cities…) and mobs |
+| Late game | Build and light a nether portal, travel through portals, triangulate strongholds with eyes of ender, fill the end portal, and a basic dragon routine (crystals, then perching) |
+| AI agent | 50+ tools for the LLM, memory-augmented prompts, reflection into lessons, **automatic skill learning**, survival reflexes, and chat commands that work without an LLM |
+| Brain ("model file") | SQLite `data/brain/model.db` holding episodes, lessons, skills, waypoints, learned hardness, milestones, seen blocks and a knowledge base of every block, item, mob, biome and structure. Export or import as `model-*.json.gz` |
+| Wiki | minecraft.wiki client with an offline full-text cache; the trainer pre-fetches a summary for every block, item and mob |
+| Server | Auto-downloads the server jar (SHA-1 verified) and Java 25 (Temurin, aarch64 or x64), accepts the EULA, writes a tuned `server.properties`, restarts the server if it crashes, and provides a console |
+
+## Install on Raspberry Pi OS
+
+Requirements: **64-bit** Raspberry Pi OS (Bookworm/Trixie), Pi 4 or Pi 5 with 4–8 GB RAM recommended, about 1 GB of disk.
+Minecraft 26.x needs Java 25, which only exists for 64-bit ARM.
+
+```bash
+git clone <this repo> pyflayer && cd pyflayer
+./install.sh
+```
+
+The installer installs `python3-tk python3-venv python3-numpy`, creates `.venv`, adds **PyFlayer AI** to the
+Games menu and the desktop, installs a `pyflayer` launcher in `~/.local/bin`, and downloads the server, Java
+and game data. Add `--nightly 23:00` to train automatically every night.
+
+Then set your AI endpoint (any OpenAI-compatible server: OpenAI, a LAN llama.cpp/vLLM/Ollama box, …):
+
+```bash
+~/.local/bin/pyflayer config llm.base_url=http://192.168.1.50:8000/v1 llm.api_key=sk-... llm.model=my-model
+```
+
+You can also do this from **Settings** in the app. With no endpoint set, everything except free-text AI tasks still works.
+
+## Using it
+
+**Desktop app:** `pyflayer gui` (or the menu entry). Use *Start server*, *Connect bot*, *Start AI agent* or
+*Start overnight training*. Tabs: Activity, Chat/Tasks, Server console, Map/Scan (live minimap), Brain.
+
+**AI providers:** `pyflayer ai providers` lists presets (OpenAI/ChatGPT, OpenRouter, Anthropic, Gemini, Groq, DeepSeek, Mistral, Together, xAI, Ollama, LM Studio, or any custom OpenAI-compatible URL). Connect with `pyflayer ai use openrouter --key sk-or-...` (optionally `--model ...`), or choose one under Settings, where *Test AI connection* checks it.
+
+**Play with it yourself:** start the server (or *Start all*), open the **Play / Test** tab, and join with
+Minecraft Java 26.3 using the address shown there (the **public address** for other devices anywhere, your network address on the same Wi-Fi, or `localhost`). For the public address, forward TCP 25565 on your router to the Pi, or set `server.upnp=true` to have PyFlayer ask the router automatically. The server is offline mode, so any username works. The tab can make you operator, bring a bot
+to you, switch your gamemode, and set day/night or difficulty. The server prints the same join info.
+
+**Multiple bots (up to 5 on one server):** pick or add bots with the **Bot** selector (*+ Bot*) and use *Start all*,
+or `pyflayer bots add Builder`, then `pyflayer run --all` or `pyflayer train --all`. Each bot has its own brain
+file (`data/brain/<name>.db`), agent and training report. Use `--bot NAME` to run one profile from the CLI.
+
+**Game rules:** the server runs in **Easy** difficulty with monsters on (zombies, skeletons, creepers spawn), and
+**keep inventory** is switched on for training, so deaths cost time but not gear. Change it in Settings
+(`server.difficulty`, `training.keep_inventory`) or with the buttons on the Play tab.
+
+The app uses a dark theme.
+
+**Console:** `pyflayer run` starts the server, bot and agent. Type a task in plain English, or `!commands`.
+
+**Overnight training:** `pyflayer train --hours 7` (the default comes from `training.hours`).
+
+**In-game chat** (from any player; set `agent.owner` to restrict it to one player):
+
+```
+!obtain iron_pickaxe     !mine oak_log 10     !craft torch 16     !smelt iron_ingot 5
+!goto 100 64 -20         !come    !follow     !fight    !eat     !scan    !status   !stop
+PyBot, build me a shelter          (free text: handled by the LLM)
+```
+
+Other commands: `pyflayer setup`, `pyflayer server`, `pyflayer wiki-sync`,
+`pyflayer brain --export model.json.gz`, `pyflayer selftest`.
+
+## How the learning works (honest version)
+
+This doesn't train a neural network on a Pi; that isn't feasible in 7 hours. The bot learns the way the
+research agents Voyager and MineDojo do, by building up **memory, skills and knowledge** that the LLM and the
+planner reuse:
+
+1. **Knowledge base, which takes seconds.** Every block, item, mob, biome and structure in 26.3 gets an entry built
+   from the server's own data generator: recipes, smelting, drops, tool tier, hardness, food and tags.
+   That is 100% of the blocks, exact for this version.
+2. **Wiki enrichment.** Summaries from minecraft.wiki for about 1,900 titles, plus strategy guides (beating
+   the game, nether portal, strongholds, ender dragon…), cached for offline use. This took about 2 minutes
+   in testing at 20 titles per request.
+3. **Practice curriculum (28 milestones):** wood → crafting table → wooden/stone tools → furnace → fuel →
+   torches → food → iron pickaxe/sword → bucket → shield → iron armor → bed → diamonds → diamond pickaxe →
+   obsidian → flint and steel → nether portal → enter the nether → blaze rods → ender pearls → eyes of ender
+   → stronghold → end portal → enter the end → kill the dragon. With an LLM, each milestone becomes an agent
+   task. Without one, the deterministic planner practises it. Timings, attempts and failures go into the brain.
+4. **After every task:** the successful action sequence is saved as a reusable **skill**, and the LLM writes
+   1–3 **lessons** into memory. Deaths are remembered with their cause, place and task. Real dig times update
+   the **learned hardness** table. Scans store **waypoints** for ores, structures, biomes and stations.
+5. **Next session:** relevant lessons, skills, milestones and knowledge are retrieved (SQLite FTS5 with
+   stemming) and put into the LLM prompt.
+
+A report is written continuously to `data/training/training-YYYYMMDD.md` and `.json`.
+
+Realistic expectations: the early and mid game (tools, iron, armor, food, diamonds) is well within reach in
+one night. The nether, stronghold and dragon stages are implemented but are hard for any bot. Expect several
+nights of attempts, and they depend heavily on the world seed and on the LLM's quality.
+
+## Performance and Raspberry Pi optimisations
+
+- **Server:** RAM picked automatically (1.8 GB on a 4 GB Pi, 3 GB on 8 GB), G1GC flags, `sync-chunk-writes=false`
+  (much faster on SD cards), network compression off for the local bot, `max-tick-time=-1` (no watchdog
+  kills on slow ticks), and pausing when empty.
+- **Bot:** numpy chunk storage; each section keeps the set of block states it contains, so searches skip
+  about 99% of the world; vectorized palette unpacking; a strict 20 TPS tick loop that resyncs after hiccups;
+  A* bounded by node and time budgets with partial paths; and LLM calls that never block physics or networking.
+- **GUI:** two refreshes per second, the minimap redraws every 3 s using numpy (about 10 ms), and nothing heavy
+  runs on the UI thread.
+- Measured here: 265 chunks decoded during login, a 100-block block search in about 10 ms, a full 100-block
+  scan in about 0.1–0.4 s, and the bot holding a steady 20.0 TPS.
+
+## Library usage (mineflayer-style)
+
+```python
+from pyflayer.data.gamedata import GameData
+from pyflayer.server.manager import ensure_gamedata
+from pyflayer.bot.bot import Bot
+
+gd = GameData(ensure_gamedata("26.3"))
+bot = Bot(gd, "PyBot", "127.0.0.1", 25565)
+bot.connect(); bot.wait_spawn()
+bot.events.on("chat", lambda who, msg: bot.chat(f"hi {who}") if "hi" in msg else None)
+bot.collect_block("#logs", 4)
+bot.craft("crafting_table")
+bot.obtain("stone_pickaxe")              # full plan from game data
+bot.goto(100, 70, -30)                   # digs / pillars / bridges if needed
+zombie = bot.entities.nearest(bot.position, lambda e: e.type == "zombie")
+bot.fight(zombie)
+print(bot.inventory.summary(), bot.world.biome_at(*bot.block_pos))
+```
+
+## Configuration (`config.json`)
+
+| key | default | meaning |
+|---|---|---|
+| `llm.base_url`, `llm.api_key`, `llm.model` | – | your OpenAI-compatible endpoint |
+| `llm.tool_mode` | `auto` | `native` tool calls, `json` fallback, or auto-detect |
+| `server.host` / `server.port` | 127.0.0.1:25565 | point at another cracked server with `server.auto_start=false` |
+| `server.view_distance` | 7 | 7 chunks is about 112 blocks, enough for the 100-block scanner |
+| `server.memory_mb` | 0 (auto) | server heap |
+| `bot.username` | PyBot | offline-mode name |
+| `agent.allow_cheats` | false | lets the agent use `/locate` (the bot is opped on the local server) |
+| `agent.owner` | "" | only obey chat from this player |
+| `training.hours` | 7 | overnight duration |
+
+Environment overrides: `PYFLAYER_LLM_BASE_URL`, `PYFLAYER_LLM_API_KEY` (or `OPENAI_API_KEY`), `PYFLAYER_LLM_MODEL`, `PYFLAYER_HOME`.
+
+## Tests
+
+```bash
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+Covers the protocol codecs (VarInt, positions, LpVec3 against the wiki's sample bytes, NBT), palette decoding, and, once game data has been generated, recipes and drops, physics and pathfinding on a synthetic world.
+
+## Project layout
+
+```
+pyflayer/protocol   buffer/NBT, connection, item components, text
+pyflayer/data       game data loader (from the server's data generator), hardness table
+pyflayer/world      chunk storage + search
+pyflayer/bot        bot core, physics, pathfinder, actions, planner, scanner, advanced (portals/end)
+pyflayer/agent      LLM client, tools, agent, brain (memory), wiki, trainer
+pyflayer/server     download / Java / run the vanilla server
+pyflayer/gui        Tkinter desktop app
+```
+
+## Notes
+
+- Packet ids, block states, items, recipes, tags and loot tables are **generated from the server jar** on
+  first run (`data/gamedata/26.3`), so nothing is hardcoded per version. Field layouts follow the
+  minecraft.wiki protocol page for 26.3. One correction found during testing: in 26.x the Player Action
+  enum has `CHANGE_DESTROY_DIRECTION` inserted at index 1, so *finish digging* is 3, not 2.
+- The local server runs in offline mode with the whitelist off (26.3 enables it by default). Only expose
+  it to networks you trust.
+- By running the installer or `setup` you accept the [Minecraft EULA](https://aka.ms/MinecraftEULA).
