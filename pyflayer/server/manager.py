@@ -271,6 +271,8 @@ class MinecraftServer:
         self._want_running = False
         self._ever_ready = False  # don't restart processes that never completed startup
         self._watchdog: threading.Thread | None = None
+        self._start_lock = threading.RLock()
+        self._owner_handle = None
 
     @property
     def dir(self) -> Path:
@@ -337,49 +339,81 @@ class MinecraftServer:
             args.append("--enable-native-access=ALL-UNNAMED")
         return args
 
-    def start(self, progress=None, wait: bool = True, timeout: float = 600) -> bool:
-        if self.proc and self.proc.poll() is None:
-            return True
-        jar = self.prepare(progress)
-        self._kill_stale()
-        cmd = [self.java, *self.jvm_args(), "-jar", str(jar), "--nogui"]
-        log.info("Starting Minecraft server %s ...", self.version)
-        self.ready.clear()
-        self.lines.clear()
-        self._ever_ready = False
-        self.status = "starting"
-        self.proc = subprocess.Popen(cmd, cwd=self.dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.STDOUT, text=True, bufsize=1, env=_java_env())
-        (self.dir / "server.pid").write_text(str(self.proc.pid))
-        self._want_running = True
-        self._reader = threading.Thread(target=self._read_output, name="mc-server-out", daemon=True)
-        self._reader.start()
-        if not self._watchdog:
-            self._watchdog = threading.Thread(target=self._watch, name="mc-server-watchdog", daemon=True)
-            self._watchdog.start()
-        if wait:
-            return self.wait_ready(timeout)
-        return True
+    def _acquire_owner(self):
+        """Keep other PyFlayer processes from launching or killing our server."""
+        import fcntl
+        handle = (self.dir / ".pyflayer-server.lock").open("a+")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            handle.close()
+            raise RuntimeError(
+                "Another PyFlayer instance is already managing this Minecraft server. "
+                "Close the other app before launching another server (worlds are preserved)."
+            ) from exc
+        self._owner_handle = handle
 
-    def _kill_stale(self):
-        """A server left running by a crashed/killed earlier run holds the world lock: stop it."""
+    def _release_owner(self):
+        handle = self._owner_handle
+        self._owner_handle = None
+        if handle is not None:
+            handle.close()  # closing the FD releases its flock on Linux
+
+    def _check_existing_server(self):
+        """Never SIGTERM another server just because an old server.pid exists."""
         pid_file = self.dir / "server.pid"
         try:
             pid = int(pid_file.read_text())
-            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace")
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            cwd = Path(f"/proc/{pid}/cwd").resolve()
         except (OSError, ValueError):
             return
-        if "server.jar" in cmdline and "java" in cmdline:
-            log.warning("stopping a leftover Minecraft server from an earlier run (pid %s)", pid)
-            import signal
-            os.kill(pid, signal.SIGTERM)
-            for _ in range(60):
-                if not Path(f"/proc/{pid}").exists():
-                    break
-                time.sleep(0.5)
-            else:
-                os.kill(pid, signal.SIGKILL)
-                time.sleep(1)
+        if not argv:
+            return
+        java = Path(os.fsdecode(argv[0])).name.lower()
+        is_minecraft = "java" in java and any(arg.endswith(b"server.jar") for arg in argv)
+        if is_minecraft and cwd == self.dir.resolve():
+            raise RuntimeError(
+                f"Minecraft server already running as PID {pid} in {self.dir}. "
+                "PyFlayer will not terminate it automatically. Close the previous "
+                "app/server gracefully before restarting. Do not delete your world."
+            )
+
+    def start(self, progress=None, wait: bool = True, timeout: float = 600) -> bool:
+        with self._start_lock:
+            if self.proc and self.proc.poll() is None:
+                return True
+            # Ownership is acquired before checking a stale PID to prevent two
+            # apps from racing to launch servers into the same world.
+            self._acquire_owner()
+            try:
+                jar = self.prepare(progress)
+                self._check_existing_server()
+                cmd = [self.java, *self.jvm_args(), "-jar", str(jar), "--nogui"]
+                log.info("Starting Minecraft server %s ...", self.version)
+                self.ready.clear()
+                self.lines.clear()
+                self._ever_ready = False
+                self.status = "starting"
+                self.proc = subprocess.Popen(cmd, cwd=self.dir, stdin=subprocess.PIPE,
+                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                             text=True, bufsize=1, env=_java_env())
+                (self.dir / "server.pid").write_text(str(self.proc.pid))
+                self._want_running = True
+                self._reader = threading.Thread(target=self._read_output,
+                                                name="mc-server-out", daemon=True)
+                self._reader.start()
+                if not self._watchdog or not self._watchdog.is_alive():
+                    self._watchdog = threading.Thread(target=self._watch,
+                                                      name="mc-server-watchdog", daemon=True)
+                    self._watchdog.start()
+            except BaseException:
+                self._release_owner()
+                raise
+            # Do not keep the startup lock during the potentially long world load.
+        if wait:
+            return self.wait_ready(timeout)
+        return True
 
     def wait_ready(self, timeout: float = 600) -> bool:
         end = time.time() + timeout
@@ -436,6 +470,7 @@ class MinecraftServer:
             else:
                 self.status = "stopped"
             self.ready.clear()
+            self._release_owner()
 
     def _watch(self):
         """Restart the server if it crashes while we still want it running."""

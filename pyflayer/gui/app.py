@@ -457,8 +457,10 @@ class App:
             if not messagebox.askyesno("Quit", "Training is running. Stop it and quit?"):
                 return
         self.root.destroy()
-        threading.Thread(target=self.rt.shutdown, daemon=True).start()
-        time.sleep(0.5)
+        # A daemon shutdown thread gets killed when the GUI's main thread exits.
+        # Keep it non-daemon so the vanilla server can save worlds and stop cleanly.
+        threading.Thread(target=self.rt.shutdown, name="pyflayer-shutdown",
+                         daemon=False).start()
 
     def run(self):
         self.root.mainloop()
