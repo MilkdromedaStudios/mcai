@@ -194,6 +194,16 @@ def cmd_ai(rt, args):
     print("test:", LLM(rt.cfg["llm"]).test())
 
 
+def cmd_update(rt, args):
+    from . import updater
+    repo = rt.cfg.get("update.repo") or updater.DEFAULT_REPO
+    info = updater.check(repo)
+    print(info["message"])
+    if args.check or not info["available"] and not (updater.ROOT / ".git").exists():
+        return
+    print(updater.update(repo))
+
+
 def cmd_bots(rt, args):
     if args.action == "add" and args.name:
         print("added", rt.add_profile(args.name))
@@ -225,6 +235,8 @@ def main(argv=None):
     ai.add_argument("--key", default=None)
     ai.add_argument("--model", default=None)
     ai.add_argument("--url", default=None, help="base URL (custom provider or override)")
+    up = sub.add_parser("update", help="install the latest release (keeps data/ and config.json)")
+    up.add_argument("--check", action="store_true", help="only check, don't install")
     bp = sub.add_parser("bots")
     bp.add_argument("action", nargs="?", choices=["list", "add", "remove"], default="list")
     bp.add_argument("name", nargs="?")
@@ -248,7 +260,7 @@ def main(argv=None):
         rt.current = rt.add_profile(args.bot)
     handlers = {"setup": cmd_setup, "config": cmd_config, "server": cmd_server, "run": cmd_run,
                 "train": cmd_train, "wiki-sync": cmd_wiki, "brain": cmd_brain, "selftest": cmd_selftest,
-                "gui": cmd_gui, "bots": cmd_bots, "ai": cmd_ai, None: cmd_gui}
+                "gui": cmd_gui, "bots": cmd_bots, "update": cmd_update, "ai": cmd_ai, None: cmd_gui}
     handlers[args.cmd](rt, args)
 
 
