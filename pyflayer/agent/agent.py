@@ -297,6 +297,16 @@ class Agent:
                 problem = "water"
         else:
             self._water_since = 0
+        # trying to walk but not moving for 6 s = stuck on a wall/corner
+        walking = b.controls.forward or b.controls.back or b.controls.left or b.controls.right
+        if walking and not moved and action != "idle" and not problem:
+            self._stuck_checks = getattr(self, "_stuck_checks", 0) + 1
+            if self._stuck_checks >= 2:
+                self._stuck_checks = 0
+                self._unstick()
+                return
+        else:
+            self._stuck_checks = 0
         if not problem or self._reflex_busy:
             return
         self._reflex_busy = True
@@ -315,6 +325,39 @@ class Agent:
             self._note(f"awareness: could not fix {problem}: {e}")
         finally:
             b.controls.jump = False
+            self._reflex_busy = False
+
+    def _unstick(self):
+        """Wiggle free like a player: back up, sidestep, jump; then break what is in front of us."""
+        import random
+        b = self.bot
+        c = b.controls
+        start = b.position
+        self._note(f"awareness: stuck at {b.block_pos} - wiggling free")
+        self._reflex_busy = True
+        try:
+            self._take_over()          # stop the stuck action; the planner/trainer re-plans afterwards
+            for keys in (("back",), ("left", "back") if random.random() < 0.5 else ("right", "back")):
+                c.clear()
+                for k in keys:
+                    setattr(c, k, True)
+                c.jump = True
+                b.wait_ticks(6)
+                c.clear()
+                if math.dist(start, b.position) > 0.8:
+                    return
+            # still stuck: break the blocks in front of us (feet and head), unless they are unsafe
+            yaw = math.radians(b.state.yaw)
+            fx, fz = round(-math.sin(yaw)), round(math.cos(yaw))
+            x, y, z = b.block_pos
+            for p in ((x + fx, y + 1, z + fz), (x + fx, y, z + fz)):
+                if b.pathfinder.dig_cost(*p):
+                    try:
+                        b.dig(p)
+                    except ActionError:
+                        pass
+            self.brain.log("awareness", f"got stuck at {b.block_pos}")
+        finally:
             self._reflex_busy = False
 
     def wait_reflexes(self, timeout: float = 180):
