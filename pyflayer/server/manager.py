@@ -263,12 +263,13 @@ class MinecraftServer:
         self.version = config["minecraft_version"]
         self.proc: subprocess.Popen | None = None
         self.ready = threading.Event()
-        self.lines: collections.deque[str] = collections.deque(maxlen=500)
+        self.lines: collections.deque[str] = collections.deque(maxlen=1500)
         self.listeners: list = []
         self._reader: threading.Thread | None = None
         self.java = None
         self.status = "stopped"
         self._want_running = False
+        self._ever_ready = False  # don't restart processes that never completed startup
         self._watchdog: threading.Thread | None = None
 
     @property
@@ -325,13 +326,16 @@ class MinecraftServer:
                               "".join(f"{k}={v}\n" for k, v in sorted(props.items())))
 
     def jvm_args(self) -> list[str]:
-        mem = self.cfg["server"]["memory_mb"] or auto_server_memory_mb()
-        return [f"-Xms{min(mem, 1024)}M", f"-Xmx{mem}M",
-                "-XX:+UseG1GC", "-XX:+ParallelRefProcEnabled", "-XX:MaxGCPauseMillis=150",
-                "-XX:+UnlockExperimentalVMOptions", "-XX:+DisableExplicitGC",
-                "-XX:G1NewSizePercent=30", "-XX:G1MaxNewSizePercent=40", "-XX:G1HeapRegionSize=8M",
-                "-XX:G1ReservePercent=20", "-XX:InitiatingHeapOccupancyPercent=15",
-                "-XX:+UseStringDeduplication", "-Dfile.encoding=UTF-8"]
+        # Java's default G1 tuning is safer than forcing 8 MB regions and fixed
+        # young-generation percentages on a memory-constrained Raspberry Pi.
+        mem = int(self.cfg["server"]["memory_mb"] or auto_server_memory_mb())
+        mem = max(512, mem)
+        args = [f"-Xms{min(mem, 512)}M", f"-Xmx{mem}M",
+                "-XX:+UseG1GC", "-XX:+UseStringDeduplication", "-Dfile.encoding=UTF-8"]
+        if self.java and _java_major(self.java) >= 24:
+            # Java 25 JNA emits a noisy *non-fatal* native-access warning.
+            args.append("--enable-native-access=ALL-UNNAMED")
+        return args
 
     def start(self, progress=None, wait: bool = True, timeout: float = 600) -> bool:
         if self.proc and self.proc.poll() is None:
@@ -341,6 +345,8 @@ class MinecraftServer:
         cmd = [self.java, *self.jvm_args(), "-jar", str(jar), "--nogui"]
         log.info("Starting Minecraft server %s ...", self.version)
         self.ready.clear()
+        self.lines.clear()
+        self._ever_ready = False
         self.status = "starting"
         self.proc = subprocess.Popen(cmd, cwd=self.dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, bufsize=1, env=_java_env())
@@ -381,25 +387,55 @@ class MinecraftServer:
             if self.ready.wait(1.0):
                 return True
             if self.proc and self.proc.poll() is not None:
-                raise RuntimeError("server exited during startup:\n" + "\n".join(list(self.lines)[-30:]))
+                # Give the output reader a moment to capture the FIRST error.
+                if self._reader:
+                    self._reader.join(timeout=2)
+                self._want_running = False
+                self.status = "crashed"
+                tail = list(self.lines)
+                important = [ln for ln in tail if re.search(
+                    r"error|exception|failed|fatal|cannot|unable|outofmemory|killed|port.*bind|eula",
+                    ln, re.I) and "restricted method" not in ln.lower()]
+                detail = "\n".join((important[:16] + ["--- last console lines ---"] + tail[-65:]))
+                raise RuntimeError(
+                    f"Minecraft server exited during startup (exit code {self.proc.returncode}).\n"
+                    f"Full output: {self.dir / 'server-console.log'}\n"
+                    f"Vanilla server log: {self.dir / 'logs' / 'latest.log'}\n"
+                    "The Java native-access warning alone is not a startup failure.\n" + detail)
         return False
 
     def _read_output(self):
         proc = self.proc
-        for line in proc.stdout:
-            line = line.rstrip()
-            self.lines.append(line)
-            if "Done (" in line and "For help" in line:
-                self.ready.set()
-                self.status = "running"
-                log.info("Server ready")
-            for fn in list(self.listeners):
-                try:
-                    fn(line)
-                except Exception:  # noqa: BLE001
-                    pass
-        self.status = "stopped"
-        self.ready.clear()
+        # Persistent log includes the BEGINNING of startup, not just the final
+        # "Stopping server" lines. Never overwrite an earlier crash diagnosis.
+        log_path = self.dir / "server-console.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as output:
+            output.write("\n=== Minecraft server launch " + time.strftime("%Y-%m-%d %H:%M:%S") + " ===\n")
+            output.flush()
+            for line in proc.stdout:
+                line = line.rstrip()
+                self.lines.append(line)
+                output.write(line + "\n")
+                output.flush()
+                if ("Done (" in line and "For help" in line) or re.search(
+                        r"Done \([^)]*\)!?\s*(?:For help|Type /help)", line):
+                    self.ready.set()
+                    self._ever_ready = True
+                    self.status = "running"
+                    log.info("Server ready")
+                for fn in list(self.listeners):
+                    try:
+                        fn(line)
+                    except Exception:  # noqa: BLE001
+                        pass
+            output.write("=== Process exit: " + str(proc.wait()) + " ===\n")
+        if self.proc is proc:
+            if not self._ever_ready and self._want_running:
+                self.status = "crashed"
+            else:
+                self.status = "stopped"
+            self.ready.clear()
 
     def _watch(self):
         """Restart the server if it crashes while we still want it running."""
@@ -407,6 +443,10 @@ class MinecraftServer:
         while True:
             time.sleep(5)
             if self._want_running and self.proc and self.proc.poll() is not None:
+                if not self._ever_ready:
+                    # Startup error: do not repeatedly launch/kill the same world.
+                    self._want_running = False
+                    continue
                 crashes += 1
                 log.warning("Minecraft server exited (code %s); restarting (%d)", self.proc.returncode, crashes)
                 if crashes > 5:

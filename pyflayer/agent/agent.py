@@ -245,7 +245,11 @@ class Agent:
         from .watcher import Blackboard, Watcher
         self.board = Blackboard()                  # shared notes between the worker AI and the watcher AI
         self.watcher = Watcher(self)
+        from .specialists import SpecialistTeam
+        self.specialists = SpecialistTeam(self)
         self.board.on_post = lambda line: self._note(line)
+        self.messages: list[tuple] = []  # (timestamp, sender, message) for in-app chat
+        self._actuation_lock = threading.RLock()
         self.tools = ToolBox(self)
         self.log = logging.getLogger("pyflayer.agent")
         self.tasks: queue.Queue = queue.Queue()
@@ -266,6 +270,7 @@ class Agent:
         bot.events.on("learn", self._on_learn)
         bot.events.on("death", self._on_death)
         bot.events.on("chat", self._on_chat)
+        bot.events.on("message", self._on_message)
         bot.events.on("crafted", lambda item, n: brain.bump(f"crafted:{item}", n))
         bot.events.on("dug", lambda pos, name: brain.bump("blocks_mined"))
         bot.events.on("plan", lambda msg: self._note(msg))
@@ -281,16 +286,35 @@ class Agent:
         self._reflex_thread = threading.Thread(target=self._reflex_loop, name="reflexes", daemon=True)
         self._reflex_thread.start()
         self.watcher.start()
+        self.specialists.start()
 
     def stop(self):
         self.running = False
+        self.specialists.stop()
         self.watcher.stop()
         self.bot.stop()
         self.brain.end_session("stopped")
 
-    def submit(self, task: str, source: str = "user"):
-        self.tasks.put((task, source))
-        self._note(f"queued task from {source}: {task}")
+    def submit(self, task: str, source: str = "user", kind: str = "task"):
+        self.tasks.put((task, source, kind))
+        self._note(f"queued {kind} from {source}: {task}")
+
+    def submit_command(self, command: str, source: str = "user"):
+        # Commands that move/dig/build use the same actor queue as AI actions.
+        # Safety stop is immediate even if another action is running.
+        if command.split(maxsplit=1)[0].lower() == "!stop":
+            self.bot.stop()
+            with self.tasks.mutex:
+                self.tasks.queue.clear()
+            self._note("Stopped on request from " + source)
+            return
+        self.submit(command, source, kind="command")
+
+    def _on_message(self, sender, text, system=False):
+        if system or not text:
+            return
+        self.messages.append((time.time(), sender or "server", text))
+        del self.messages[:-300]
 
     def _note(self, msg: str):
         line = time.strftime("%H:%M:%S ") + msg
@@ -327,7 +351,7 @@ class Agent:
         low = t.lower()
         name = self.bot.username.lower()
         if t.startswith("!"):
-            threading.Thread(target=self._chat_command, args=(sender, t), daemon=True).start()
+            self.submit_command(t, sender)
             return
         # talk to a bot by name ("PyBot get me 5 oak logs"), or to all bots ("bots come here")
         if name in low or low.startswith(("bots", "everyone", "all bots", "hey bot", "bot ")):
@@ -338,12 +362,20 @@ class Agent:
         t = re.sub(re.escape(self.bot.username), "", text, flags=re.I)
         t = re.sub(r"^\W*(hey|ok|okay|yo|please|bots?|everyone|all bots)\b", "", t.strip(), flags=re.I).strip(" ,:!.?")
         self._note(f"instruction from {sender}: {t}")
+        if sender == "app":
+            self.messages.append((time.time(), "You", text))
+            del self.messages[:-300]
         bot = self.bot
         low = t.lower()
         if re.fullmatch(r"(stop|halt|cancel|freeze|stay|stay still|wait)( it| that| now| please)?", low.strip(" !.")):
             self.stop_goal()
             bot.stop()
             bot.chat("Stopped.")
+            return
+        # Interpreter and chatter run separately from physical tasks.
+        # Their replies can arrive while the main worker is gathering resources.
+        if self.llm.configured and self.specialists.running:
+            self.specialists.receive(t, sender)
             return
         # 1) big goals ("get to the end", "beat the game", "go to the nether", "get diamonds"...)
         goal = match_goal(t)
@@ -369,36 +401,26 @@ class Agent:
             kind, thing = find_thing(t, bot.gd)
             if thing:
                 bot.chat(f"Looking for {thing.replace('_', ' ')}...")
-                threading.Thread(target=self._chat_command, args=(sender, f"!find {thing}"), daemon=True).start()
+                self.submit_command(f"!find {thing}", sender)
                 return
         cmd, why = interpret(t, bot.gd)
         self._note(why + (f" -> {cmd}" if cmd else ""))
         if cmd:
             bot.chat("On it: " + why.replace("understood: ", "").replace("_", " "))
-            threading.Thread(target=self._chat_command, args=(sender, cmd), daemon=True).start()
+            self.submit_command(cmd, sender)
         else:
             bot.chat(f"Sorry {sender}, I don't know how to do that yet. Try naming what you want, like "
                      f"'get 10 torches', 'kill the zombie', 'go to the nether' or 'get to the end'.")
 
     # ------------------------------------------------------------------ goals & questions
     def start_goal(self, goal: str, sender: str = "app"):
+        """Long goals share the same actuation lane as mining and building."""
         from .trainer import Trainer
-        self.stop_goal()
-        tr = Trainer(self, 12)
-        self.goal_trainer = tr
-        steps = [m.name for m in tr.curriculum]
-        todo = steps[:steps.index(goal) + 1]
-        self.bot.chat(f"OK {sender}! Goal: {goal.replace('_', ' ')}. That's up to {len(todo)} steps "
-                      f"({todo[0].replace('_', ' ')} -> ... -> {goal.replace('_', ' ')}). Starting now.")
-
-        def run():
-            try:
-                res = tr.run_until(goal)
-            except Exception as e:  # noqa: BLE001
-                res = f"goal failed: {e}"
-            self._note(f"goal {goal}: {res}")
-            self.bot.chat(res[:250])
-        threading.Thread(target=run, name="goal", daemon=True).start()
+        if goal not in [m.name for m in Trainer(self, 12).curriculum]:
+            self.submit(goal, source=sender)
+            return
+        self._note(f"goal requested: {goal}")
+        self.submit(goal, source=sender, kind="goal")
 
     def stop_goal(self):
         tr = getattr(self, "goal_trainer", None)
@@ -789,19 +811,36 @@ class Agent:
     def _loop(self):
         while self.running:
             try:
-                task, source = self.tasks.get(timeout=0.5)
+                request = self.tasks.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if not self.bot.spawned.is_set():
-                self.bot.spawned.wait(60)
+            task, source = request[:2]
+            kind = request[2] if len(request) > 2 else "task"
+            if not self.bot.spawned.is_set() and not self.bot.spawned.wait(60):
+                self._note("bot offline: could not run " + task[:100])
+                continue
             try:
-                self.run_task(task)
+                with self._actuation_lock:
+                    if kind == "command":
+                        self._chat_command(source, task)
+                    elif kind == "goal":
+                        from .trainer import Trainer
+                        trainer = Trainer(self, 12)
+                        self.goal_trainer = trainer
+                        self._note("Starting goal: " + task)
+                        result = trainer.run_until(task)
+                        self._note("Goal result: " + str(result)[:250])
+                        self.bot.chat(str(result)[:250])
+                    else:
+                        self.run_task(task)
             except LLMNotConfigured as e:
                 self._note(str(e))
-                self.bot.chat("No AI endpoint configured (llm.base_url). Chat commands still work: !help")
+                self.bot.chat("No AI endpoint configured. Chat commands still work: !help")
             except Exception as e:  # noqa: BLE001
                 self._note(f"task crashed: {e}")
                 self.log.exception("task crashed")
+            finally:
+                self.tasks.task_done()
 
     def finish_task(self, summary: str, success: bool):
         self.task_result = (summary, success)
@@ -814,6 +853,13 @@ class Agent:
         skill_txt = "\n".join(f"- {s['name']}({', '.join(s['params'])}): {s['description']} "
                               f"[ok {s['successes']}/fail {s['failures']}]" for s in skills)
         sys = SYSTEM_PROMPT.format(name=b.username, version=b.gd.version)
+        sys += ("\n# Parallel specialist team\n"
+                "Interpreter routes player requests; chatter answers during physical tasks; "
+                "planner and builder offer suggestions; scout locates loaded ores; escaper "
+                "alerts about danger. They only post notes or queue requests. YOU are the "
+                "sole physical action worker; never assume a teammate has moved, dug or "
+                "placed blocks. Treat urgent escape notes as highest priority, and use "
+                "live observations before deciding on risky movements.\n")
         if mem:
             sys += "\n# Relevant memories\n" + mem
         if skill_txt:
@@ -826,6 +872,12 @@ class Agent:
                 {"role": "user", "content": f"TASK: {task}\n\nCurrent status:\n{self.status_text()}"}]
 
     def run_task(self, task: str, max_steps: int | None = None, time_limit: float = 1800) -> tuple[str, bool]:
+        """All LLM-triggered world mutations are serialized, even during training."""
+        with self._actuation_lock:
+            return self._run_task_impl(task, max_steps, time_limit)
+
+    def _run_task_impl(self, task: str, max_steps: int | None = None,
+                       time_limit: float = 1800) -> tuple[str, bool]:
         """Run one task with the LLM in a tool-calling loop. Returns (summary, success)."""
         if not self.llm.configured:
             raise LLMNotConfigured("LLM endpoint not configured (set llm.base_url / llm.api_key in config.json)")
@@ -850,7 +902,7 @@ class Agent:
                 step += 1
                 notes = self.board.unread()
                 if notes:   # what the watcher AI saw since the last decision
-                    messages.append({"role": "user", "content": "Teammate (watcher) reports:\n" + "\n".join(notes[-8:])})
+                    messages.append({"role": "user", "content": "Teammates report:\n" + "\n".join(notes[-8:])})
                 try:
                     reply = self.llm.chat(self._trim(messages), schemas)
                 except LLMNotConfigured:
