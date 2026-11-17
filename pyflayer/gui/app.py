@@ -414,6 +414,8 @@ class App:
             parts.append(rt.status if rt.status not in ("idle",) else "offline")
         if self.update_notice:
             parts.append(self.update_notice)
+        if rt.server and rt.server.port_notice:
+            parts.append(rt.server.port_notice)
         self.status_var.set("   |   ".join(parts))
         if s and s.agent:
             h = s.agent.history
