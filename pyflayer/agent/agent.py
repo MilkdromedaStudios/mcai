@@ -243,16 +243,79 @@ class Agent:
 
     # ================================================================== reflexes (no LLM, fast)
     def _reflex_loop(self):
+        last_check = 0.0
         while self.running:
             time.sleep(0.5)
             if self.paused_reflexes or not self.bot.spawned.is_set() or self.bot.dead:
                 continue
             try:
+                if time.time() - last_check >= 3.0:      # look at the surroundings every 3 seconds
+                    last_check = time.time()
+                    self._situation_check()
                 self._reflexes()
             except ActionError:
                 pass
             except Exception:  # noqa: BLE001
                 self.log.debug("reflex error\n%s", traceback.format_exc())
+
+    def situation(self) -> dict:
+        """What is around the bot right now (cheap: a few block lookups)."""
+        b = self.bot
+        gd, w = b.gd, b.world
+        fx, fy, fz = b.block_pos
+        hx, hy, hz = (int(math.floor(v)) for v in b.eye)
+        feet, head = w.get(fx, fy, fz), w.get(hx, hy, hz)
+        below = w.get(fx, fy - 1, fz)
+        name = lambda s: gd.block_name(s) if s is not None else "unloaded"  # noqa: E731
+        return {
+            "in_water": bool(feet is not None and gd.is_water[feet]) or b.state.in_water,
+            "head_under_water": bool(head is not None and gd.is_water[head]),
+            "in_lava": bool(feet is not None and gd.is_lava[feet]) or b.state.in_lava,
+            "suffocating": bool(head is not None and gd.shape_kind[head] == 1 and not gd.is_liquid[head]),
+            "on_fire_block": name(feet) in ("fire", "soul_fire") or name(below) == "magma_block",
+            "feet": name(feet), "head": name(head), "below": name(below),
+        }
+
+    def _situation_check(self):
+        """Every 3 s: re-read the surroundings and fix bad situations (water, lava, stuck in a block...)."""
+        b = self.bot
+        sit = self.situation()
+        pos = b.position
+        prev = getattr(self, "_last_pos", None)
+        self._last_pos = (pos, time.time())
+        moved = prev is None or math.dist(prev[0], pos) > 0.5
+        action = b.current_action
+        problem = None
+        if sit["in_lava"] or sit["on_fire_block"]:
+            problem = "lava"
+        elif sit["suffocating"]:
+            problem = "suffocating"
+        elif sit["in_water"]:
+            # swimming as part of a path is fine; idling or going nowhere in water is not
+            self._water_since = getattr(self, "_water_since", 0) or time.time()
+            if action == "idle" or (not moved and time.time() - self._water_since > 6):
+                problem = "water"
+        else:
+            self._water_since = 0
+        if not problem or self._reflex_busy:
+            return
+        self._reflex_busy = True
+        try:
+            self._note(f"awareness: {problem} (feet={sit['feet']}, head={sit['head']}) - fixing it")
+            if not self._take_over():
+                return
+            if problem in ("lava", "water"):
+                b.controls.jump = True
+                self._note(b.escape_liquid())
+            elif problem == "suffocating":
+                hx, hy, hz = (int(math.floor(v)) for v in b.eye)
+                b.dig((hx, hy, hz))
+            self.brain.log("awareness", f"fixed {problem} at {b.block_pos}")
+        except ActionError as e:
+            self._note(f"awareness: could not fix {problem}: {e}")
+        finally:
+            b.controls.jump = False
+            self._reflex_busy = False
 
     def wait_reflexes(self, timeout: float = 180):
         """Block while a reflex (fight/escape/eat) is controlling the bot."""

@@ -808,6 +808,36 @@ class ActionsMixin:
         out = self.escape_up(3)
         return f"hid underground until {self.time_phase()}; {out}"
 
+    def nearest_dry_land(self, radius: int = 16):
+        """Closest cell (feet position) where we can stand out of water/lava, or None."""
+        bx, by, bz = self.block_pos
+        pf = self.pathfinder
+        best, bd = None, 1e9
+        for dy in (1, 0, 2, -1, 3, -2):
+            for dx in range(-radius, radius + 1):
+                for dz in range(-radius, radius + 1):
+                    d = dx * dx + dz * dz + dy * dy * 4
+                    if d >= bd:
+                        continue
+                    x, y, z = bx + dx, by + dy, bz + dz
+                    if pf.can_stand(x, y, z) and not pf.water(x, y, z) and not pf.lava(x, y, z) \
+                            and not pf.water(x, y - 1, z):
+                        best, bd = (x, y, z), d
+        return best
+
+    @action
+    def escape_liquid(self) -> str:
+        """Get out of water or lava onto the nearest dry land (swims; digs/bridges if needed)."""
+        land = self.nearest_dry_land(16) or self.nearest_dry_land(32)
+        if land is None:
+            # nothing nearby: swim up and head in any direction until land appears
+            self.controls.jump = True
+            self._wait(20)
+            self.controls.jump = False
+            raise ActionError("no dry land within 32 blocks")
+        self.goto(GoalBlock(*land), timeout=60)
+        return f"got out of the liquid at {land}"
+
     @action
     def follow(self, e, distance: float = 3.0, duration: float = 60) -> str:
         end = time.time() + duration
