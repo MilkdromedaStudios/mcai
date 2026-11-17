@@ -199,6 +199,10 @@ class Runtime:
                             b["view_distance"], b["auto_respawn"])
                 s.bot.events.on("end", lambda reason, s=s: self._on_bot_end(s, reason))
         if not s.bot.connected:
+            # The local server may have moved to a different port due to a
+            # collision. Always reconnect to its actual configured endpoint.
+            s.bot.host = self.cfg["server"]["host"]
+            s.bot.port = self.cfg["server"]["port"]
             self.status = f"connecting {s.name}"
             s.bot.connect()
             if not s.bot.wait_spawn(90):
@@ -223,6 +227,8 @@ class Runtime:
                 try:
                     if self.server and not self.server.running:
                         self.start_server()
+                    s.bot.host = self.cfg["server"]["host"]
+                    s.bot.port = self.cfg["server"]["port"]
                     s.bot.connect()
                     if s.bot.wait_spawn(60):
                         log.info("%s reconnected", s.name)
