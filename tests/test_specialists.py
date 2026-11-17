@@ -31,7 +31,7 @@ class TestServerJavaArgs(unittest.TestCase):
     def test_small_heap_uses_safe_defaults(self):
         class FakeConfig:
             def __getitem__(self, key):
-                return {"server": {"memory_mb": 768}}[key]
+                return {"minecraft_version": "26.3", "server": {"memory_mb": 768}}[key]
 
         s = MinecraftServer(FakeConfig())
         s.java = None
