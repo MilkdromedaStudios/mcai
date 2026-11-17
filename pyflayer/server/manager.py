@@ -364,7 +364,7 @@ class MinecraftServer:
         pid_file = self.dir / "server.pid"
         try:
             pid = int(pid_file.read_text())
-            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\\0")
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
             cwd = Path(f"/proc/{pid}/cwd").resolve()
         except (OSError, ValueError):
             return
