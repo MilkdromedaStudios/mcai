@@ -475,7 +475,9 @@ def card_bg(frame) -> str:
 class SettingsDialog:
     FIELDS = [("llm.api_key", "AI API key"), ("llm.model", "AI model (blank = provider default)"),
               ("llm.base_url", "Base URL (only for custom / local AI)"),
-              ("server.port", "Server port"), ("server.difficulty", "Difficulty (easy / normal / hard)"),
+              ("server.port", "Server port"),
+              ("server.auto_port_fallback", "Automatically use another port if busy (true / false)"),
+              ("server.difficulty", "Difficulty (easy / normal / hard)"),
               ("training.keep_inventory", "Keep inventory while training (true / false)"),
               ("training.hours", "Overnight training hours"),
               ("agent.owner", "Bots only obey this player (blank = anyone)"),
