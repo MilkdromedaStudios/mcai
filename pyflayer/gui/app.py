@@ -354,7 +354,8 @@ class App:
         hours = self.cfg["training"]["hours"]
         if not messagebox.askyesno("Train overnight", f"Train {self.rt.current} for {hours} hours?\n\n"
                                    "It will practise beating the game, build its knowledge and save everything to "
-                                   "its model file. Press Stop to end early."):
+                                   "its model file. Training now prioritizes actual goals, verifies each result, "
+                                   "and reports when blocked. Press Stop to end early."):
             return
         self._bg("Train overnight", lambda: self.rt.start_training(hours, True, self.rt.current))
 
@@ -385,7 +386,9 @@ class App:
             b = s.bot if s else None
             goal = getattr(s.agent, "goal_trainer", None) if s and s.agent else None
             if s and s.trainer and s.trainer.running:
-                text = "training"
+                text = f"training: {s.trainer.current or 'starting'}"
+            elif s and s.trainer and s.trainer.status in ("blocked", "error"):
+                text = "training " + s.trainer.status
             elif goal and goal.running:
                 text = f"goal: {goal.current.replace('_', ' ')}"
             elif b and b.spawned.is_set():
@@ -406,10 +409,15 @@ class App:
                          f"{b.time_phase()}")
             if s.agent and s.agent.current_task:
                 parts.append(f"task: {s.agent.current_task[:60]}")
-            if s.trainer and s.trainer.running:
+            if s.trainer:
                 p = s.trainer.progress()
                 done = sum(m["achieved"] for m in p["milestones"])
-                parts.append(f"training {p['elapsed_h']:.1f}/{p['hours']}h · milestones {done}/{len(p['milestones'])}")
+                if s.trainer.running or p["status"] in ("blocked", "error"):
+                    parts.append(f"training {p['status']} · goal {p['current'] or '-'} · "
+                                 f"{p['completed_attempts']} attempts / {p['successful_attempts']} successes · "
+                                 f"milestones {done}/{len(p['milestones'])}")
+                    if p["status"] in ("blocked", "error") and p["last_error"]:
+                        parts.append("training issue: " + p["last_error"][:180])
         else:
             parts.append(rt.status if rt.status not in ("idle",) else "offline")
         if self.update_notice:
