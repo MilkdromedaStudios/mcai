@@ -449,22 +449,47 @@ class Trainer:
             return ms
         return None
 
+    def _verified(self, ms: Milestone) -> bool:
+        """A claimed AI success is not proof of a completed Minecraft action."""
+        if ms.check(self):
+            return True
+        if ms.name == "nether_portal":
+            return bool(self.bot.find_blocks("nether_portal", 32, 1))
+        if ms.name == "stronghold":
+            return bool(self.bot.find_blocks("end_portal_frame", 112, 1))
+        if ms.name == "kill_dragon" and self.bot.dimension == "the_end":
+            # An actual End gateway is produced after a successful dragon fight.
+            return bool(self.bot.find_blocks("end_gateway", 200, 1))
+        return False
+
     def _attempt(self, ms: Milestone, fails):
         t0 = time.time()
         self.note(f"milestone '{ms.name}': {ms.goal}")
         err = ""
         ok = False
         try:
-            flag_milestone = ms.name in ("nether_portal", "stronghold", "kill_dragon")
             if self.agent.llm.configured:
                 goal = ms.goal + " Tip: the obtain_item tool can do most item goals automatically."
-                summary, ok_llm = self.agent.run_task(goal, time_limit=ms.minutes * 60)
-                ok = ms.check(self) or (flag_milestone and ok_llm)
-                err = "" if ok else summary
+                summary, _ = self.agent.run_task(goal, time_limit=ms.minutes * 60)
+                ok = self._verified(ms)
+                if not ok:
+                    err = summary or "AI did not complete the milestone"
+                    if self.running:
+                        self.note(f"AI did not verify '{ms.name}'; trying the built-in resource planner")
+                        try:
+                            res = ms.run(self)
+                            self.note(f"  planner -> {str(res)[:200]}")
+                            ok = self._verified(ms)
+                            if not ok:
+                                err += "; planner: " + str(res)[:150]
+                        except ActionError as e:
+                            err += "; planner: " + str(e)
             else:
                 res = ms.run(self)
-                self.note(f"  -> {str(res)[:200]}")
-                ok = ms.check(self) or flag_milestone
+                self.note(f"  planner -> {str(res)[:200]}")
+                ok = self._verified(ms)
+                if not ok:
+                    err = f"goal still not verified after planner attempt: {str(res)[:150]}"
         except ActionError as e:
             err = str(e)
         except Exception as e:  # noqa: BLE001
@@ -473,7 +498,6 @@ class Trainer:
         secs = time.time() - t0
         self.completed_attempts += 1
         if not ok and (err == "stopped" or "bot died" in err) and time.time() - self.agent.interrupted_at < secs + 5:
-            # interrupted by a survival reflex (or death): not a real failure, just try again
             self.note(f"milestone '{ms.name}' interrupted ({err}); will retry")
             self.agent.wait_reflexes()
             return
@@ -488,7 +512,8 @@ class Trainer:
                                 "milestone", 0.8, "training")
         else:
             fails[ms.name] = fails.get(ms.name, 0) + 1
-            self.note(f"milestone failed: {ms.name}: {err[:200]}")
+            self.last_error = f"{ms.name}: {err[:230] or 'could not verify progress'}"
+            self.note(f"milestone failed ({fails[ms.name]}/3 before recovery): {self.last_error}")
             if err:
                 self.brain.remember(f"Attempt at '{ms.name}' failed: {err[:250]}", "failure", 0.6, "training")
 
