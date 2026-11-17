@@ -14,6 +14,8 @@ import tkinter as tk
 import traceback
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from ..config import DATA_DIR
+
 BG, PANEL, FIELD, FG, MUTED, ACCENT = "#1e1f22", "#2b2d31", "#26272b", "#e6e6e6", "#9aa0a6", "#3d7eff"
 CARD_COLORS = ["#3d7eff", "#e5484d", "#30a46c", "#f5a524", "#8e4ec6"]
 
@@ -84,6 +86,7 @@ class App:
         self.busy = False
         self.update_notice = ""
         self._hist_seen = 0
+        self._chat_seen = 0
         self._cards: dict[str, dict] = {}
         self._theme()
         self._build()
@@ -135,7 +138,7 @@ class App:
         bar.pack(fill="x")
         buttons = [("Start bot", self.do_start, "Accent.TButton"), ("Stop", self.do_stop, "TButton"),
                    ("Server", self.do_server, "TButton"), ("Join server", self.do_join, "TButton"),
-                   ("Run from model file", self.do_model, "TButton"), ("Train overnight", self.do_train, "TButton"),
+                   ("Import brain backup", self.do_model, "TButton"), ("Train overnight", self.do_train, "TButton"),
                    ("Settings", self.do_settings, "TButton")]
         per_row = 4 if self.compact else 7
         for i, (text, cmd, style) in enumerate(buttons):
@@ -144,7 +147,7 @@ class App:
         for c in range(per_row):
             bar.columnconfigure(c, weight=1)
 
-        # ---- tell the selected bot what to do (same as talking to it in chat)
+        # ---- direct chat with the selected bot (also supports action requests)
         ask = ttk.Frame(self.root, padding=(8, 2, 8, 0))
         ask.pack(fill="x")
         self.ask_var = tk.StringVar()
@@ -152,10 +155,23 @@ class App:
         entry.pack(side="left", fill="x", expand=True)
         entry.insert(0, "")
         entry.bind("<Return>", lambda e: self.do_tell())
-        ttk.Button(ask, text="Tell bot", command=self.do_tell).pack(side="left", padx=(4, 0))
-        self._ask_hint = ttk.Label(self.root, text="Tell it anything: get to the end · beat the game · get me 12 torches · "
+        ttk.Button(ask, text="Send", command=self.do_tell).pack(side="left", padx=(4, 0))
+        self._ask_hint = ttk.Label(self.root, text="Message your bot during mining or exploring: hi · find iron · build a shelter · "
                                    "kill that zombie · what does a blaze drop? · stop", foreground=MUTED, padding=(10, 0))
         self._ask_hint.pack(fill="x")
+
+        # ---- two-way in-app conversation, separate from low-level activity log
+        chatf = ttk.LabelFrame(self.root, text="Bot conversation", padding=(6, 2))
+        chatf.pack(fill="x", padx=6, pady=(2, 4))
+        self.chat = tk.Text(chatf, height=4 if self.compact else 6, wrap="word",
+                            state="disabled", relief="flat", font="TkDefaultFont", padx=8, pady=4)
+        chatsb = ttk.Scrollbar(chatf, orient="vertical", command=self.chat.yview)
+        self.chat.configure(yscrollcommand=chatsb.set)
+        self.chat.pack(side="left", fill="both", expand=True)
+        chatsb.pack(side="right", fill="y")
+        self.model_info = tk.StringVar()
+        ttk.Label(self.root, textvariable=self.model_info, foreground=MUTED,
+                  padding=(8, 2), wraplength=760 if self.compact else 940).pack(fill="x")
 
         # ---- status + log + join info
         self.status_var = tk.StringVar(value="Select a bot and press Start bot.")
@@ -210,6 +226,10 @@ class App:
     def select(self, name):
         self.rt.current = name
         self._hist_seen = 0
+        self._chat_seen = 0
+        self.chat.configure(state="normal")
+        self.chat.delete("1.0", "end")
+        self.chat.configure(state="disabled")
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
@@ -260,8 +280,8 @@ class App:
 
         def go():
             agent = self.rt.session().agent or self.rt.start_agent(self.rt.current)
-            agent.instruct(text, sender=self.cfg.get("agent.owner") or "app")
-        self._bg("Tell bot", go)
+            agent.instruct(text, sender="app")
+        self._bg("Message bot", go)
 
     def do_stop(self):
         s = self.rt.sessions.get(self.rt.current)
@@ -315,7 +335,7 @@ class App:
         self._bg("Join server", lambda: self.rt.start_agent(self.rt.current))
 
     def do_model(self):
-        path = filedialog.askopenfilename(title="Run from model file", parent=self.root,
+        path = filedialog.askopenfilename(title="Import a PyFlayer brain backup (.json.gz)", parent=self.root,
                                           filetypes=[("PyFlayer model", "*.json.gz *.gz"), ("All files", "*")])
         if not path:
             return
@@ -326,7 +346,8 @@ class App:
             self.rt.session().bot and self.rt.session().bot.learned_hardness.update(brain.learned_hardness())
             self.rt.start_agent(self.rt.current)
             self.root.after(0, lambda: messagebox.showinfo(
-                "Model loaded", f"{self.rt.current} now runs with the skills and memory from\n{path}"))
+                "Brain backup imported", f"Imported memory and skills from:\n{path}\n\n"
+                f"Saved into: {DATA_DIR / 'brain' / (self.rt.current + '.db')}"))
         self._bg("Run from model file", go)
 
     def do_train(self):
@@ -406,6 +427,22 @@ class App:
                 self.log.see("end")
                 self.log.configure(state="disabled")
                 self._hist_seen = len(h)
+            messages = s.agent.messages
+            if len(messages) != self._chat_seen:
+                recent = messages[self._chat_seen:] if self._chat_seen <= len(messages) else messages[-80:]
+                self.chat.configure(state="normal")
+                for stamp, sender, msg in recent:
+                    self.chat.insert("end", time.strftime("%H:%M", time.localtime(stamp)) +
+                                     "  " + str(sender) + ": " + str(msg) + "\n")
+                line_count = int(self.chat.index("end-1c").split(".")[0])
+                if line_count > 450:
+                    self.chat.delete("1.0", f"{line_count - 450}.0")
+                self.chat.see("end")
+                self.chat.configure(state="disabled")
+                self._chat_seen = len(messages)
+        self.model_info.set("Brain file: " + str(DATA_DIR / "brain" / (rt.current + ".db")) +
+                            "  |  Training backup: " +
+                            str(DATA_DIR / "brain" / (rt.current + "-export.json.gz")))
         srv = rt.server
         if srv and srv.running:
             info = rt.join_info()
