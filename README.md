@@ -24,9 +24,56 @@ furnaces, pathfinding with digging, combat, scanning, the LLM tool loop and the 
 | Scanner | 100-block scan: ores with nearest coordinates, trees, water and lava, stations, **biomes**, **structures** (villages, strongholds, mineshafts, dungeons, temples, monuments, ruined portals, ancient cities, trial chambers, geodes, fortresses, bastions, end cities…) and mobs |
 | Late game | Build and light a nether portal, travel through portals, triangulate strongholds with eyes of ender, fill the end portal, and a basic dragon routine (crystals, then perching) |
 | AI agent | 50+ tools for the LLM, memory-augmented prompts, reflection into lessons, **automatic skill learning**, survival reflexes, and chat commands that work without an LLM |
-| Brain ("model file") | SQLite `data/brain/model.db` holding episodes, lessons, skills, waypoints, learned hardness, milestones, seen blocks and a knowledge base of every block, item, mob, biome and structure. Export or import as `model-*.json.gz` |
+| Brain ("model file") | Each bot's persistent SQLite brain is at `data/brain/<bot-name>.db`; overnight training exports `data/brain/<bot-name>-export.json.gz`. Import a `.json.gz` backup with the app button. This is memory/skills, **not** an LLM weight file. |
 | Wiki | minecraft.wiki client with an offline full-text cache; the trainer pre-fetches a summary for every block, item and mob |
 | Server | Auto-downloads the server jar (SHA-1 verified) and Java 25 (Temurin, aarch64 or x64), accepts the EULA, writes a tuned `server.properties`, restarts the server if it crashes, and provides a console |
+
+## Coordinated specialist AI and desktop chat
+
+One Minecraft character can **listen and reason about several things at once**, but it
+has only one set of movement and interaction controls. There are six cooperating roles:
+
+- **Interpreter** routes chat messages to conversation, a direct command, a game goal or an AI action.
+- **Chatter** can reply to messages in the app/Minecraft chat while the worker mines or walks.
+- **Planner** suggests the worker's next useful step using live world state.
+- **Builder** offers construction/bridging and fall-safety strategies when a build task is underway.
+- **Scout** independently reads loaded blocks for ores while the worker performs other actions.
+- **Escaper** raises critical-health alerts; the existing fast survival reflexes handle escape movement.
+
+Roles share the blackboard with the worker and **do not independently drive the
+bot**. Movement, digging, crafting and building requests are serialized through
+the worker. Model-based specialists require a configured API/local model. The
+scout and emergency warning logic work without one. Automated water-bucket
+clutches are **not yet a tested movement skill**: don't depend on the bot to
+survive a planned fall.
+
+In the app, type in the **message box** and press **Send**; the conversation
+pane displays your message, the bot's reply, and players' in-game chat. The
+activity log below remains available for tool details and errors.
+
+### Where model files actually go
+
+For a source checkout at `~/mcai` (or wherever you cloned it):
+
+- **Persistent learned brain:** `~/mcai/data/brain/PyBot.db` (one SQLite file per bot name).
+- **Training export:** `~/mcai/data/brain/PyBot-export.json.gz`.
+- **Imported memory backup:** choose a `.json.gz` file via **Import brain backup**;
+  its data is imported into the selected bot's `.db` file.
+- **Local LLM weights:** managed by **Ollama, LM Studio, or your chosen model
+  server**, *not* placed inside the PyFlayer brain folder. For Ollama configure
+  the `ollama` provider in Settings and select a model available to Ollama.
+
+The app displays your actual per-bot brain and backup paths beneath the conversation.
+
+### If the Minecraft server exits during startup
+
+Check `data/server/26.3/server-console.log` (full captured output, including
+early errors) and `data/server/26.3/logs/latest.log` (vanilla Minecraft log).
+The app now includes these paths and an error excerpt in the startup exception.
+A `java.lang.System::load` native-access warning alone is not the cause of a
+crash. Check earlier `ERROR`, exception, port-binding, EULA, memory or
+world-lock lines before changing Java settings. Failed startup no longer triggers
+an unlimited overlapping restart loop.
 
 ## Install on Raspberry Pi OS
 
