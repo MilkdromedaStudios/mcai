@@ -167,6 +167,10 @@ class Trainer:
         self.report_dir = data_dir("training")
         self._threads: list[threading.Thread] = []
         self.done_this_run: set[str] = set()
+        self.last_error = ""
+        self.completed_attempts = 0
+        self.successful_attempts = 0
+        self.recovery_attempts: dict[str, int] = {}
 
     def note(self, msg):
         line = time.strftime("%H:%M:%S ") + msg
@@ -177,11 +181,24 @@ class Trainer:
 
     # ================================================================== lifecycle
     def start(self, background: bool = True):
+        if self.running:
+            raise RuntimeError("Overnight training is already running for this bot")
+        self.last_error = ""
+        self.status = "starting"
+        self.current = ""
+        self.completed_attempts = 0
+        self.successful_attempts = 0
+        self.done_this_run.clear()
+        self.recovery_attempts.clear()
         self.running = True
         self.start_time = time.time()
         self.end_time = self.start_time + self.hours * 3600
         self.brain.start_session("training")
         self.note(f"overnight training started for {self.hours:.1f} h")
+        self.note("training plan: pursue wood -> tools -> food -> iron -> diamonds -> Nether -> End; "
+                  "explore only when resources cannot be found")
+        if not self.agent.llm.configured:
+            self.note("No AI model configured: using the deterministic recipe/resource planner for practice")
         k = threading.Thread(target=self._knowledge_worker, name="train-knowledge", daemon=True)
         k.start()
         self._threads.append(k)
@@ -193,6 +210,9 @@ class Trainer:
             self._practice_loop()
 
     def stop(self):
+        if self.running:
+            self.status = "stopping"
+            self.note("training stop requested")
         self.running = False
         self.bot.stop()
 
@@ -300,38 +320,77 @@ class Trainer:
                   f"structures: {[s['structure'] for s in res['structures']] or 'none'}")
 
     def _practice_loop(self):
-        last_survey = 0.0
+        """Work on an actual goal immediately, not a random 140-block walk.
+
+        Only explore after the current goal repeatedly fails, and expose a
+        terminal blocked/error state rather than silently looping surveys.
+        """
         last_report = 0.0
         fails: dict[str, int] = {}
         try:
             while self.running and time.time() < self.end_time:
                 if not self._ensure_connected():
-                    self.note("cannot connect; stopping training")
+                    if self.running:
+                        self.status = "error"
+                        self.last_error = "Lost connection to the Minecraft server after reconnect attempts"
+                        self.note(self.last_error)
                     break
                 if time.time() - last_report > 120:
                     self.write_report()
                     last_report = time.time()
-                self._survival_upkeep()
-                if time.time() - last_survey > 1200:
-                    self.status = "surveying"
-                    self.survey()
-                    last_survey = time.time()
-                    continue
-                ms = self._next_milestone(fails)
-                if ms is None:
-                    self.status = "surveying"
-                    self.survey(220)
-                    continue
-                self.status = f"practising {ms.name}"
-                self.current = ms.name
-                self._attempt(ms, fails)
+
+                # The agent's queued goals/chat commands also use this lock.
+                # Only one controller can move/dig/place at a time.
+                with self.agent._actuation_lock:
+                    if not self.running:
+                        break
+                    self._survival_upkeep()
+                    ms = self._next_milestone(fails)
+                    if ms is None:
+                        self.status = "completed"
+                        self.current = "all milestones complete"
+                        self.note("every curriculum milestone achieved or verified; training complete")
+                        break
+                    attempts = fails.get(ms.name, 0)
+                    if attempts >= 3:
+                        recoveries = self.recovery_attempts.get(ms.name, 0)
+                        if recoveries >= 3:
+                            self.status = "blocked"
+                            self.last_error = (
+                                f"Could not complete '{ms.name}' after {attempts + 3 * recoveries} "
+                                "failed attempts across multiple locations. "
+                                "See the training report for the specific errors."
+                            )
+                            self.note("TRAINING BLOCKED: " + self.last_error)
+                            break
+                        self.recovery_attempts[ms.name] = recoveries + 1
+                        self.status = "recovering"
+                        self.note(f"'{ms.name}' failed 3 times; looking for a different nearby "
+                                  f"resource area (recovery {recoveries + 1}/3)")
+                        self.survey(distance=55)
+                        fails[ms.name] = 0
+                        continue
+                    self.status = f"practising {ms.name}"
+                    self.current = ms.name
+                    self._attempt(ms, fails)
         except Exception as e:  # noqa: BLE001
             log.exception("training loop crashed")
-            self.note(f"training loop error: {e}")
+            self.status = "error"
+            self.last_error = f"{type(e).__name__}: {e}"
+            self.note("TRAINING ERROR: " + self.last_error)
         finally:
-            self.status = "finished"
             self.running = False
-            self.finish()
+            if self.status not in ("completed", "blocked", "error"):
+                self.status = "finished" if time.time() >= self.end_time else "stopped"
+            self.note(f"training ended: {self.status}"
+                      + (f" - {self.last_error}" if self.last_error else ""))
+            try:
+                self.finish()
+            except Exception as e:  # noqa: BLE001
+                log.exception("could not save training report")
+                self.status = "error"
+                self.last_error = f"Could not save training results: {e}"
+                self.note(self.last_error)
 
     def run_until(self, target: str, max_hours: float = 12.0) -> str:
         """Work through the beat-the-game plan, step by step, until `target` is reached (used for spoken goals
@@ -373,9 +432,10 @@ class Trainer:
             self.write_report()
 
     def _next_milestone(self, fails):
+        """Follow prerequisites in order; never skip wood/tools to wander aimlessly."""
         for ms in self.curriculum:
             if ms.name in self.done_this_run:
-                continue          # achieved in this run; later milestones re-obtain whatever they need
+                continue
             try:
                 if ms.check(self):
                     self.done_this_run.add(ms.name)
@@ -384,15 +444,9 @@ class Trainer:
                         self.brain.milestone(ms.name, True, 0)
                         self.note(f"milestone already satisfied: {ms.name}")
                     continue
-            except Exception:  # noqa: BLE001
-                pass
-            if fails.get(ms.name, 0) >= 3:
-                continue          # skip for now; come back after other progress
+            except Exception as e:  # noqa: BLE001
+                self.note(f"milestone check '{ms.name}' failed: {e}")
             return ms
-        # everything either done or failed 3x: reset failure counters once to retry
-        if any(v >= 3 for v in fails.values()):
-            fails.clear()
-            return None
         return None
 
     def _attempt(self, ms: Milestone, fails):
@@ -417,6 +471,7 @@ class Trainer:
             err = f"{type(e).__name__}: {e}"
             log.exception("milestone crashed")
         secs = time.time() - t0
+        self.completed_attempts += 1
         if not ok and (err == "stopped" or "bot died" in err) and time.time() - self.agent.interrupted_at < secs + 5:
             # interrupted by a survival reflex (or death): not a real failure, just try again
             self.note(f"milestone '{ms.name}' interrupted ({err}); will retry")
@@ -425,6 +480,8 @@ class Trainer:
         self.brain.milestone(ms.name, ok, secs, err)
         if ok:
             fails.pop(ms.name, None)
+            self.successful_attempts += 1
+            self.recovery_attempts.pop(ms.name, None)
             self.done_this_run.add(ms.name)
             self.note(f"milestone ACHIEVED: {ms.name} in {secs / 60:.1f} min")
             self.brain.remember(f"Achieved '{ms.name}' in {secs / 60:.1f} minutes. Approach: {ms.goal}",
@@ -446,6 +503,10 @@ class Trainer:
             "hours": self.hours,
             "status": self.status,
             "current": self.current,
+            "last_error": self.last_error,
+            "completed_attempts": self.completed_attempts,
+            "successful_attempts": self.successful_attempts,
+            "recent_events": self.events[-20:],
             "milestones": [{"name": m.name, "achieved": bool(ms.get(m.name, {}).get("achieved")),
                             "attempts": ms.get(m.name, {}).get("attempts", 0),
                             "minutes": round((ms.get(m.name, {}).get("seconds") or 0) / 60, 1),
@@ -470,6 +531,9 @@ class Trainer:
         k = p["knowledge"]
         lines = [f"# PyFlayer overnight training report ({stamp})", "",
                  f"Elapsed: {p['elapsed_h']} h of {p['hours']} h - status: {p['status']}", "",
+                 f"Current goal: {p['current']} | Attempted: {p['completed_attempts']} | "
+                 f"Succeeded: {p['successful_attempts']}", "",
+                 f"Last error: {p['last_error'] or 'none'}", "",
                  "## Milestones (beat-the-game curriculum)", "", "| milestone | done | attempts | minutes | last error |",
                  "|---|---|---|---|---|"]
         for m in p["milestones"]:
