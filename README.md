@@ -75,6 +75,22 @@ crash. Check earlier `ERROR`, exception, port-binding, EULA, memory or
 world-lock lines before changing Java settings. Failed startup no longer triggers
 an unlimited overlapping restart loop.
 
+**Exit code 143** commonly indicates a termination signal (SIGTERM), rather
+than a Java exception. Only run one PyFlayer app / training service against a
+given world. The app now refuses to automatically terminate another Java server
+or launch two servers for the same world, and closing the GUI waits for a clean
+save/shutdown. On a Raspberry Pi, inspect possible competing instances and
+memory pressure with:
+
+```bash
+ps -eo pid,ppid,stat,cmd | grep -E '[j]ava|[p]yflayer'
+free -h
+journalctl -b --no-pager | grep -Ei 'out of memory|oom|sigterm|java|pyflayer' | tail -n 50
+```
+
+These checks diagnose the likely external signal; they do not guarantee
+that every source of SIGTERM is fixed.
+
 ## Install on Raspberry Pi OS
 
 **You need:** 64-bit Raspberry Pi OS (Bookworm or Trixie), a Raspberry Pi 4 or 5 with 4–8 GB RAM, about 1 GB of free
