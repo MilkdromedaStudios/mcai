@@ -1,0 +1,75 @@
+name: Test and release
+
+# - Every push / pull request: run the offline test suite.
+# - Pushing a tag like v1.0.0 (or running this workflow by hand with a version): build the
+#   install packages and publish a GitHub Release with them attached.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v1.0.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Syntax check
+        run: python -m compileall -q pyflayer
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  release:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Work out the version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then V="${{ inputs.version }}"; else V="${GITHUB_REF_NAME}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+      - name: Build install packages
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          NAME="pyflayer-$V"
+          mkdir -p "dist/$NAME"
+          cp -r pyflayer assets tests install.sh run.sh requirements.txt README.md LICENSE "dist/$NAME/"
+          find "dist/$NAME" -name "__pycache__" -type d -prune -exec rm -rf {} +
+          chmod +x "dist/$NAME/install.sh" "dist/$NAME/run.sh"
+          echo "$V" > "dist/$NAME/VERSION"
+          (cd dist && tar czf "$NAME.tar.gz" "$NAME" && zip -qr "$NAME.zip" "$NAME")
+          (cd dist && sha256sum "$NAME.tar.gz" "$NAME.zip" > SHA256SUMS.txt)
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          NOTES="Install on Raspberry Pi OS (64-bit):
+
+          \`\`\`bash
+          curl -L -o pyflayer.tar.gz https://github.com/${{ github.repository }}/releases/download/$V/pyflayer-$V.tar.gz
+          tar xzf pyflayer.tar.gz && cd pyflayer-$V && ./install.sh
+          \`\`\`
+
+          See the README for setup, AI providers and usage."
+          if gh release view "$V" >/dev/null 2>&1; then
+            gh release upload "$V" dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt --clobber
+          else
+            gh release create "$V" dist/*.tar.gz dist/*.zip dist/SHA256SUMS.txt \
+              --title "PyFlayer $V" --notes "$NOTES" --target "${{ github.sha }}"
+          fi
