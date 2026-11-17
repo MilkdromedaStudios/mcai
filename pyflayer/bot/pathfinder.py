@@ -305,10 +305,15 @@ class Pathfinder:
                             out.append(((nx, ty, nz), 1.0 + k * 0.6 + (2.0 if k == 3 else 0.0),
                                         Step(nx, ty, nz, "drop")))
                         break
-                # 7) bridge over the gap at our level
-                if scaffold_left > 0 and self.can_place and self.standable(x, y - 1, z) and \
-                        self.passable(nx, y - 1, nz) and not self.lava(nx, y - 1, nz):
-                    out.append(((nx, y, nz), 3.5, Step(nx, y, nz, "bridge", place=(nx, y - 1, nz))))
+                # 7) bridge over a gap - or over lava: a block placed on lava becomes the floor
+                lava_below = self.lava(nx, y - 1, nz)
+                # the current floor may itself be a block we plan to place (chained bridging over lava/gaps)
+                floor_ok = self.standable(x, y - 1, z) or self.lava(x, y - 1, z) or \
+                    (self.passable(x, y - 1, z) and not self.water(x, y, z))
+                if scaffold_left > 0 and self.can_place and floor_ok and \
+                        (self.passable(nx, y - 1, nz) or lava_below) and not self.lava(nx, y, nz):
+                    out.append(((nx, y, nz), 3.0 if lava_below else 3.5,
+                                Step(nx, y, nz, "bridge", place=(nx, y - 1, nz))))
                 continue
             # 5) dig through (feet+head) and walk
             if self.can_dig and self.standable(nx, y - 1, nz):

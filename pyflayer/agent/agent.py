@@ -51,6 +51,10 @@ class Agent:
         self.llm = llm or LLM(cfg["llm"])
         self.server = server
         self.scanner = Scanner(bot)
+        from .watcher import Blackboard, Watcher
+        self.board = Blackboard()                  # shared notes between the worker AI and the watcher AI
+        self.watcher = Watcher(self)
+        self.board.on_post = lambda line: self._note(line)
         self.tools = ToolBox(self)
         self.log = logging.getLogger("pyflayer.agent")
         self.tasks: queue.Queue = queue.Queue()
@@ -85,9 +89,11 @@ class Agent:
         self._thread.start()
         self._reflex_thread = threading.Thread(target=self._reflex_loop, name="reflexes", daemon=True)
         self._reflex_thread.start()
+        self.watcher.start()
 
     def stop(self):
         self.running = False
+        self.watcher.stop()
         self.bot.stop()
         self.brain.end_session("stopped")
 
@@ -297,6 +303,16 @@ class Agent:
                 problem = "water"
         else:
             self._water_since = 0
+        # trying to walk but not moving for 6 s = stuck on a wall/corner
+        walking = b.controls.forward or b.controls.back or b.controls.left or b.controls.right
+        if walking and not moved and action != "idle" and not problem:
+            self._stuck_checks = getattr(self, "_stuck_checks", 0) + 1
+            if self._stuck_checks >= 2:
+                self._stuck_checks = 0
+                self._unstick()
+                return
+        else:
+            self._stuck_checks = 0
         if not problem or self._reflex_busy:
             return
         self._reflex_busy = True
@@ -315,6 +331,39 @@ class Agent:
             self._note(f"awareness: could not fix {problem}: {e}")
         finally:
             b.controls.jump = False
+            self._reflex_busy = False
+
+    def _unstick(self):
+        """Wiggle free like a player: back up, sidestep, jump; then break what is in front of us."""
+        import random
+        b = self.bot
+        c = b.controls
+        start = b.position
+        self._note(f"awareness: stuck at {b.block_pos} - wiggling free")
+        self._reflex_busy = True
+        try:
+            self._take_over()          # stop the stuck action; the planner/trainer re-plans afterwards
+            for keys in (("back",), ("left", "back") if random.random() < 0.5 else ("right", "back")):
+                c.clear()
+                for k in keys:
+                    setattr(c, k, True)
+                c.jump = True
+                b.wait_ticks(6)
+                c.clear()
+                if math.dist(start, b.position) > 0.8:
+                    return
+            # still stuck: break the blocks in front of us (feet and head), unless they are unsafe
+            yaw = math.radians(b.state.yaw)
+            fx, fz = round(-math.sin(yaw)), round(math.cos(yaw))
+            x, y, z = b.block_pos
+            for p in ((x + fx, y + 1, z + fz), (x + fx, y, z + fz)):
+                if b.pathfinder.dig_cost(*p):
+                    try:
+                        b.dig(p)
+                    except ActionError:
+                        pass
+            self.brain.log("awareness", f"got stuck at {b.block_pos}")
+        finally:
             self._reflex_busy = False
 
     def wait_reflexes(self, timeout: float = 180):
@@ -364,13 +413,18 @@ class Agent:
             return
         idle = b.current_action == "idle"
         hostile = b.entities.nearest(b.position, lambda e: e.hostile and e.type not in ("ender_dragon",), 12)
+        t_hurt, attacker_id, _ = b.last_hurt
+        attacker = b.entities.get(attacker_id) if time.time() - t_hurt < 3 else None
+        if attacker and attacker.type not in ("ender_dragon",) and attacker.distance_to(*b.position) < 8:
+            hostile = attacker       # provoked neutral mobs (endermen, piglins, wolves...) count too
         dist = b.entity_distance(hostile) if hostile else 99
         action = None
         if hostile and b.health <= 8 and dist < 8:
             action = ("recover", hostile)
         elif hostile and hostile.type == "creeper" and dist < 5:
             action = ("creeper", hostile)
-        elif hostile and dist < 3.5 and hostile.type not in ("creeper", "enderman") and b.health > 8:
+        elif hostile and dist < 3.5 and hostile.type != "creeper" and (hostile.type != "enderman" or hostile is attacker) \
+                and b.health > 8:
             armed = max([b.gd.attack_damage(i.name) for i in b.inventory.items()] + [1.0]) >= 4
             weak = hostile.type in ("silverfish", "endermite", "slime", "magma_cube", "zombie", "husk")
             action = ("fight", hostile) if (armed or (weak and b.health > 14)) else ("evade", hostile)
@@ -463,13 +517,14 @@ class Agent:
         """Run one task with the LLM in a tool-calling loop. Returns (summary, success)."""
         if not self.llm.configured:
             raise LLMNotConfigured("LLM endpoint not configured (set llm.base_url / llm.api_key in config.json)")
-        max_steps = max_steps or self.cfg["llm"].get("max_steps_per_task", 40)
+        max_steps = max_steps or self.cfg["llm"].get("max_steps_per_task", 0) or 10 ** 9   # 0 = unlimited
         self.current_task = task
         self.task_done.clear()
         self.task_result = ("", False)
         self.trace = []
         t0 = time.time()
         self._note(f"TASK: {task}")
+        self.board.post("worker", f"started task: {task}")
         self.brain.log("task_start", task, 1.5)
         messages = self._context_messages(task)
         schemas = self.tools.schemas()
@@ -481,6 +536,9 @@ class Agent:
                     self.finish_task("time limit reached", False)
                     break
                 step += 1
+                notes = self.board.unread()
+                if notes:   # what the watcher AI saw since the last decision
+                    messages.append({"role": "user", "content": "Teammate (watcher) reports:\n" + "\n".join(notes[-8:])})
                 try:
                     reply = self.llm.chat(self._trim(messages), schemas)
                 except LLMNotConfigured:
@@ -531,6 +589,7 @@ class Agent:
             self.brain.log("task_end", f"{task} -> {'SUCCESS' if success else 'FAILED'}: {summary} ({secs:.0f}s)", 2.0)
             self.brain.bump("tasks_succeeded" if success else "tasks_failed")
             self._note(f"TASK {'DONE' if success else 'FAILED'}: {summary}")
+            self.board.post("worker", f"{'finished' if success else 'failed'} task: {task} - {summary[:120]}")
             try:
                 self._learn_from_task(task, summary, success, secs)
             except Exception as e:  # noqa: BLE001

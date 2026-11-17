@@ -114,10 +114,17 @@ class Combat:
         def run():
             try:
                 b.pathfinder.can_dig = True
+                b.pathfinder.can_place = True
                 res = b.pathfinder.find(b._start_node(), GoalNear(*dest, 2.0), max_nodes=6000, timeout=0.4)
                 self.last_path = (res.status, len(res.steps))
                 if res.steps:
-                    b._follow(res.steps[:6], time.time() + 4)
+                    b._follow(res.steps[:8], time.time() + 5)
+                else:
+                    # no quick route: never give up - full search that may dig, bridge and pillar
+                    res = b.pathfinder.find(b._start_node(), GoalNear(*dest, 2.5), max_nodes=25000, timeout=1.5)
+                    self.last_path = ("full-" + res.status, len(res.steps))
+                    if res.steps:
+                        b._follow(res.steps[:16], time.time() + 10)
             except Exception as ex:  # noqa: BLE001
                 self.last_error = repr(ex)
         self._path_thread = threading.Thread(target=run, daemon=True)
