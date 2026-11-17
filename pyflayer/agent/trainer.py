@@ -333,6 +333,45 @@ class Trainer:
             self.running = False
             self.finish()
 
+    def run_until(self, target: str, max_hours: float = 12.0) -> str:
+        """Work through the beat-the-game plan, step by step, until `target` is reached (used for spoken goals
+        like 'get to the end'). Each step is retried; steps already done are skipped."""
+        names = [m.name for m in self.curriculum]
+        if target not in names:
+            raise ValueError(f"unknown goal {target}")
+        self.running = True
+        self.start_time = time.time()
+        self.end_time = self.start_time + max_hours * 3600
+        self.status = f"goal: {target}"
+        fails: dict[str, int] = {}
+        try:
+            for ms in self.curriculum[:names.index(target) + 1]:
+                while True:
+                    if not self.running:
+                        return "stopped"
+                    if time.time() > self.end_time:
+                        return f"ran out of time at '{ms.name}'"
+                    if not self._ensure_connected():
+                        return "lost the connection to the server"
+                    try:
+                        done = ms.check(self)
+                    except Exception:  # noqa: BLE001
+                        done = False
+                    if done or ms.name in self.done_this_run:
+                        self.done_this_run.add(ms.name)
+                        break
+                    self._survival_upkeep()
+                    self.current = ms.name
+                    self.bot.chat(f"Next step: {ms.goal}"[:250])
+                    self._attempt(ms, fails)
+                    if fails.get(ms.name, 0) >= 4:
+                        return f"I'm stuck at '{ms.goal}' after 4 tries - check the log"
+            return f"done! ({target.replace('_', ' ')})"
+        finally:
+            self.running = False
+            self.status = "idle"
+            self.write_report()
+
     def _next_milestone(self, fails):
         for ms in self.curriculum:
             if ms.name in self.done_this_run:
