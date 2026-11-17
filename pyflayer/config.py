@@ -67,7 +67,12 @@ DEFAULTS: dict = {
         "wiki_rate_per_sec": 1.0,
         "reflect_every_min": 20,
     },
+    "update": {
+        "repo": "MilkdromedaStudios/mcai",   # GitHub repo whose releases the updater installs
+        "check_on_start": True,
+    },
     "gui": {
+        "compact": "auto",           # auto (small screens) | true | false
         "refresh_ms": 500,
         "minimap": True,
     },
