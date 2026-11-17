@@ -42,7 +42,7 @@ class TestServerOwnership(unittest.TestCase):
         (self.root / "server.pid").write_text(str(os.getpid()))
         # Simulate a Java process actually running from this world's directory.
         with (
-            patch("pathlib.Path.read_bytes", return_value=b"/usr/bin/java\\x00-jar\\x00server.jar\\x00"),
+            patch("pathlib.Path.read_bytes", return_value=b"/usr/bin/java\x00-jar\x00server.jar\x00"),
             patch("pathlib.Path.resolve", return_value=self.root),
             patch("os.kill") as kill,
         ):
