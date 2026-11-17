@@ -853,6 +853,13 @@ class Agent:
         skill_txt = "\n".join(f"- {s['name']}({', '.join(s['params'])}): {s['description']} "
                               f"[ok {s['successes']}/fail {s['failures']}]" for s in skills)
         sys = SYSTEM_PROMPT.format(name=b.username, version=b.gd.version)
+        sys += ("\n# Parallel specialist team\n"
+                "Interpreter routes player requests; chatter answers during physical tasks; "
+                "planner and builder offer suggestions; scout locates loaded ores; escaper "
+                "alerts about danger. They only post notes or queue requests. YOU are the "
+                "sole physical action worker; never assume a teammate has moved, dug or "
+                "placed blocks. Treat urgent escape notes as highest priority, and use "
+                "live observations before deciding on risky movements.\n")
         if mem:
             sys += "\n# Relevant memories\n" + mem
         if skill_txt:
@@ -895,7 +902,7 @@ class Agent:
                 step += 1
                 notes = self.board.unread()
                 if notes:   # what the watcher AI saw since the last decision
-                    messages.append({"role": "user", "content": "Teammate (watcher) reports:\n" + "\n".join(notes[-8:])})
+                    messages.append({"role": "user", "content": "Teammates report:\n" + "\n".join(notes[-8:])})
                 try:
                     reply = self.llm.chat(self._trim(messages), schemas)
                 except LLMNotConfigured:
