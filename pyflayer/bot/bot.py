@@ -666,6 +666,9 @@ class Bot(ActionsMixin):
             w = (Writer().string(part).long(int(time.time() * 1000)).long(random.getrandbits(63))
                  .bool(False).varint(0).raw(b"\x00\x00\x00").byte(1))
             self.send("chat", w)
+            # Expose the bot's own replies in the desktop conversation view.
+            self.chat_log.append((time.time(), self.username, part))
+            self.events.emit("message", self.username, part, False)
 
     def whisper(self, player: str, message: str):
         self.chat(f"/msg {player} {message}")
