@@ -144,6 +144,19 @@ class App:
         for c in range(per_row):
             bar.columnconfigure(c, weight=1)
 
+        # ---- tell the selected bot what to do (same as talking to it in chat)
+        ask = ttk.Frame(self.root, padding=(8, 2, 8, 0))
+        ask.pack(fill="x")
+        self.ask_var = tk.StringVar()
+        entry = ttk.Entry(ask, textvariable=self.ask_var)
+        entry.pack(side="left", fill="x", expand=True)
+        entry.insert(0, "")
+        entry.bind("<Return>", lambda e: self.do_tell())
+        ttk.Button(ask, text="Tell bot", command=self.do_tell).pack(side="left", padx=(4, 0))
+        self._ask_hint = ttk.Label(self.root, text="Tell it anything: get to the end · beat the game · get me 12 torches · "
+                                   "kill that zombie · what does a blaze drop? · stop", foreground=MUTED, padding=(10, 0))
+        self._ask_hint.pack(fill="x")
+
         # ---- status + log + join info
         self.status_var = tk.StringVar(value="Select a bot and press Start bot.")
         ttk.Label(self.root, textvariable=self.status_var, padding=(8, 4), foreground=FG,
@@ -239,6 +252,17 @@ class App:
                           "For the AI brain, open Settings and choose an AI provider + key."))
         self._bg("Start bot", go)
 
+    def do_tell(self):
+        text = self.ask_var.get().strip()
+        if not text:
+            return
+        self.ask_var.set("")
+
+        def go():
+            agent = self.rt.session().agent or self.rt.start_agent(self.rt.current)
+            agent.instruct(text, sender=self.cfg.get("agent.owner") or "app")
+        self._bg("Tell bot", go)
+
     def do_stop(self):
         s = self.rt.sessions.get(self.rt.current)
         if not s:
@@ -248,6 +272,7 @@ class App:
                 return
             s.trainer.stop()
         if s.agent:
+            s.agent.stop_goal()
             with s.agent.tasks.mutex:
                 s.agent.tasks.queue.clear()
         if s.bot:
@@ -337,8 +362,11 @@ class App:
         for name, c in self._cards.items():
             s = rt.sessions.get(name)
             b = s.bot if s else None
+            goal = getattr(s.agent, "goal_trainer", None) if s and s.agent else None
             if s and s.trainer and s.trainer.running:
                 text = "training"
+            elif goal and goal.running:
+                text = f"goal: {goal.current.replace('_', ' ')}"
             elif b and b.spawned.is_set():
                 text = f"{b.current_action if b.current_action != 'idle' else 'online'} · {b.dimension}"
             elif b and b.connected:

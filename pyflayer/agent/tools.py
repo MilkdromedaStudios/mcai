@@ -267,6 +267,14 @@ class ToolBox:
         def smelt(item, count=1):
             return self.bot.smelt(norm(item), max(1, int(count)))
 
+        @add("achieve_goal", "Work through the whole beat-the-game plan up to a big goal, step by step: one of "
+             "iron_armor, diamonds, nether_portal, enter_nether, blaze_rods, ender_pearls, eyes_of_ender, stronghold, "
+             "end_portal, enter_end, kill_dragon (= beat the game). Runs in the background.",
+             {"goal": S("goal step name")}, ("goal",))
+        def achieve_goal(goal):
+            a.start_goal(str(goal).strip().lower(), "AI")
+            return f"started working towards {goal}; progress is reported in chat"
+
         @add("obtain_item", "AUTOMATIC: get `count` of any item. Works out the full plan from game data (craft, smelt, "
              "mine with the right tool tier, hunt mobs) and executes it, including getting tools first. Prefer this "
              "for anything that needs several steps.", {"item": S("item id"), "count": I("how many")},

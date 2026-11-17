@@ -42,6 +42,197 @@ kill the ender dragon.
 """
 
 
+_NUM_WORDS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+              "eight": 8, "nine": 9, "ten": 10, "some": 4, "a few": 3, "a stack of": 64, "stack of": 64}
+_BLOCK_WORDS = {"wood": "#logs", "logs": "#logs", "log": "#logs", "trees": "#logs", "tree": "#logs", "stone": "stone",
+                "cobble": "stone", "cobblestone": "stone", "dirt": "dirt", "sand": "sand", "coal": "coal_ore",
+                "iron": "iron_ore", "diamonds": "diamond_ore", "diamond": "diamond_ore", "gravel": "gravel"}
+
+
+def _resolve_item(words: str, gd) -> str | None:
+    w = re.sub(r"[^a-z0-9 ]", "", words.lower()).strip()
+    w = re.sub(r"^(the|some|me|my|us|of)\s+", "", w)
+    cands = [w.replace(" ", "_")]
+    if w.endswith("es"):
+        cands.append(w[:-2].replace(" ", "_"))
+    if w.endswith("s"):
+        cands.append(w[:-1].replace(" ", "_"))
+    for c in cands:
+        if c in gd.item_ids:
+            return c
+    return None
+
+
+def phrase_to_command(text: str, gd) -> str | None:
+    """Turn a plain-English request into a ! command (no AI needed). None = not understood."""
+    t = text.lower().strip(" .!?")
+    if not t:
+        return None
+    if re.fullmatch(r"(stop|halt|wait|cancel|stand still|freeze)( it| that| now)?", t):
+        return "!stop"
+    if re.search(r"\b(come|get) (here|over here|to me)\b|^come$", t):
+        return "!come"
+    if re.search(r"\bfollow( me)?\b", t):
+        return "!follow"
+    if re.search(r"\b(status|how are you|where are you|your health)\b", t):
+        return "!status"
+    if re.search(r"\b(scan|look around|what('s| is) around)\b", t):
+        return "!scan"
+    if re.fullmatch(r"(eat|eat something|you('re| are) hungry)", t):
+        return "!eat"
+    m = re.search(r"\b(?:go|walk|move) to (-?\d+)[ ,]+(-?\d+)[ ,]+(-?\d+)", t)
+    if m:
+        return f"!goto {m.group(1)} {m.group(2)} {m.group(3)}"
+    m = re.search(r"\b(?:fight|kill|attack)\s*(?:the|that|a|an)?\s*([a-z_ ]*)$", t)
+    if m:
+        target = m.group(1).strip().replace(" ", "_").rstrip("s") or "hostile"
+        return f"!fight {target if target not in ('it', 'them', 'mob', 'monster') else 'hostile'}"
+
+    def count_and_rest(s):
+        s = s.strip()
+        m2 = re.match(r"(\d+)\s+(.*)", s)
+        if m2:
+            return int(m2.group(1)), m2.group(2)
+        for word, n in sorted(_NUM_WORDS.items(), key=lambda kv: -len(kv[0])):
+            if s.startswith(word + " "):
+                return n, s[len(word) + 1:]
+        return 1, s
+    m = re.search(r"\b(?:mine|dig|chop|cut|collect|gather)\s+(?:me\s+|us\s+|some\s+)?(.+)", t)
+    if m:
+        n, rest = count_and_rest(m.group(1))
+        rest = re.sub(r"\b(down|up|for me|please)\b", "", rest).strip()
+        block = _BLOCK_WORDS.get(rest) or _resolve_item(rest, gd)
+        if block:
+            return f"!mine {block} {n}"
+    m = re.search(r"\bsmelt\s+(?:me\s+)?(.+)", t)
+    if m:
+        n, rest = count_and_rest(m.group(1))
+        item = _resolve_item(rest, gd)
+        if item:
+            return f"!smelt {item} {n}"
+    m = re.search(r"\b(?:get|obtain|make|craft|build|bring|give)\s+(?:me\s+|us\s+)?(.+)", t)
+    if m:
+        n, rest = count_and_rest(m.group(1))
+        rest = re.sub(r"\b(for me|please|now)\b", "", rest).strip()
+        if rest in _BLOCK_WORDS and rest not in ("diamonds", "diamond", "coal", "iron"):
+            word = {"wood": "oak_log", "logs": "oak_log", "log": "oak_log", "trees": "oak_log"}.get(rest)
+            if word:
+                return f"!mine #logs {n}"
+        item = _resolve_item(rest, gd) or {"diamonds": "diamond", "coal": "coal", "iron": "iron_ingot",
+                                            "wood": "oak_log"}.get(rest)
+        if item:
+            return f"!obtain {item} {n}"
+    return None
+
+
+_VERBS = [  # (words, action) - first match in the sentence wins
+    (("stop", "halt", "cancel", "freeze", "stay still", "quit it"), "stop"),
+    (("come", "over here"), "come"),
+    (("follow", "stay with", "stick with"), "follow"),
+    (("kill", "fight", "attack", "hunt", "slay", "defeat", "beat up"), "fight"),
+    (("smelt", "cook", "roast"), "smelt"),
+    (("eat", "hungry", "starving"), "eat"),
+    (("mine", "dig", "chop", "cut down", "collect", "gather", "break", "harvest"), "mine"),
+    (("find", "look for", "search", "locate", "where is", "where's", "go to the", "take me to"), "find"),
+    (("get", "make", "craft", "build", "bring", "need", "want", "give", "obtain", "fetch", "grab", "create"), "obtain"),
+    (("scan", "look around", "explore around", "what's around", "what is around", "surroundings"), "scan"),
+    (("status", "how are you", "where are you", "health"), "status"),
+]
+
+
+def _ngrams(words, n):
+    return [" ".join(words[i:i + n]) for i in range(len(words) - n + 1)]
+
+
+def find_thing(text: str, gd):
+    """Best item / block / mob named anywhere in a sentence (fuzzy, handles plurals and typos).
+    Returns (kind, id) with kind in item|block|mob, or (None, None)."""
+    import difflib
+    text = re.sub(r"\b(\w+) (?:trees?|wood)\b", r"\1 log", text.lower())      # "birch trees" -> "birch log"
+    words = re.findall(r"[a-z]+", text)
+    mobs = {e.replace("_", " "): e for e in gd.entity_type_ids}
+    items = {i.replace("_", " "): i for i in gd.item_ids}
+    blocks = {b.replace("_", " "): b for b in gd.block_names}
+    for n in (4, 3, 2, 1):                       # longest phrase first ("iron pickaxe" before "iron")
+        for g in _ngrams(words, n):
+            for cand in (g, g[:-1] if g.endswith("s") else g, g[:-2] if g.endswith("es") else g):
+                if cand in items:            # items first: "ender pearl" is an item, not the thrown entity
+                    return "item", items[cand]
+                if cand in blocks:
+                    return "block", blocks[cand]
+                if cand in mobs:
+                    return "mob", mobs[cand]
+    for n in (3, 2, 1):                          # typos: "diamnd pickaxe", "furnce"
+        for g in _ngrams(words, n):
+            if len(g) < (6 if n == 1 else 4):
+                continue
+            for table, kind in ((items, "item"), (mobs, "mob")):
+                m = difflib.get_close_matches(g, table.keys(), n=1, cutoff=0.88 if n == 1 else 0.84)
+                if m:
+                    return kind, table[m[0]]
+    return None, None
+
+
+# big goals -> step of the beat-the-game plan to work up to
+GOALS = [
+    (r"\b(beat|finish|win|complete|end)\b.*\b(game|minecraft)\b|\b(kill|defeat|slay|beat|fight)\b.*\bdragon\b",
+     "kill_dragon"),
+    (r"\b(go|get|reach|enter|travel|make it|take me|bring me|teleport|jump)\b.*\bthe end\b|\bend (dimension|island)\b",
+     "enter_end"),
+    (r"\bend portal\b", "end_portal"),
+    (r"\bstronghold\b", "stronghold"),
+    (r"\beyes? of ender\b|\bender eyes?\b", "eyes_of_ender"),
+    (r"\bender ?pearls?\b", "ender_pearls"),
+    (r"\bblaze rods?\b", "blaze_rods"),
+    (r"\b(go|get|reach|enter|travel|take me|bring me)\b.*\bnether\b(?! portal)", "enter_nether"),
+    (r"\bnether portal\b", "nether_portal"),
+    (r"\b(full )?iron armou?r\b|\bfull iron\b", "iron_armor"),
+    (r"\bgear up\b|\bget (geared|ready)\b|\bprepare\b", "iron_armor"),
+]
+QUESTION = re.compile(r"^\s*(what|how|why|which|who|when|does|do|can|could|is|are|tell me)\b|\?\s*$", re.I)
+
+
+def match_goal(text: str) -> str | None:
+    low = text.lower()
+    for rx, goal in GOALS:
+        if re.search(rx, low):
+            return goal
+    return None
+
+
+def interpret(text: str, gd) -> tuple[str | None, str]:
+    """Work out what any sentence means without an AI. Returns (! command or None, explanation)."""
+    cmd = phrase_to_command(text, gd)
+    if cmd:
+        return cmd, f"understood: {cmd[1:]}"
+    low = " " + text.lower() + " "
+    action = next((a for words, a in _VERBS if any(f" {w}" in low for w in words)), None)
+    m = re.search(r"\b(\d+)\b", low)
+    count = int(m.group(1)) if m else next((n for w, n in _NUM_WORDS.items() if f" {w} " in low), 1)
+    kind, thing = find_thing(text, gd)
+    coords = re.findall(r"-?\d+", text)
+    if action in ("stop", "come", "follow", "eat", "scan", "status"):
+        return f"!{ {'scan': 'scan', 'status': 'status'}.get(action, action) }", f"understood: {action}"
+    if action == "find" and len(coords) >= 3:
+        return f"!goto {coords[0]} {coords[1]} {coords[2]}", "understood: go to those coordinates"
+    if kind == "mob" and action in (None, "fight", "find", "mine"):
+        return (f"!fight {thing}", f"understood: fight {thing}") if action != "find" else \
+            (f"!find {thing}", f"understood: go to the nearest {thing}")
+    if action == "fight":
+        return "!fight hostile", "understood: fight the nearest monster"
+    if thing is None:
+        return None, "I couldn't tell which item, block or mob you mean"
+    if action == "find":
+        return f"!find {thing}", f"understood: go to the nearest {thing}"
+    if action == "smelt":
+        return f"!smelt {thing} {count}", f"understood: smelt {count} {thing}"
+    if action == "mine" and thing in gd.block_index:
+        return f"!mine {thing} {count}", f"understood: mine {count} {thing}"
+    if thing in gd.item_ids:
+        return f"!obtain {thing} {count}", f"understood: get {count} {thing}"
+    return f"!mine {thing} {count}", f"understood: mine {count} {thing}"
+
+
 class Agent:
     def __init__(self, bot, cfg, brain: Brain, wiki: Wiki, llm: LLM | None = None, server=None):
         self.bot = bot
@@ -131,18 +322,122 @@ class Agent:
         owner = self.cfg["agent"].get("owner")
         if owner and sender.lower() != owner.lower():
             return
-        name = self.bot.username.lower()
         t = text.strip()
         self.brain.log("chat", f"<{sender}> {t}")
+        low = t.lower()
+        name = self.bot.username.lower()
         if t.startswith("!"):
             threading.Thread(target=self._chat_command, args=(sender, t), daemon=True).start()
             return
-        if name in t.lower() or t.lower().startswith(("bot", "hey")):
-            if self.llm.configured:
-                self.submit(f"Player {sender} says to you in chat: \"{t}\". Respond in chat and do what they ask "
-                            f"if reasonable.", source=sender)
+        # talk to a bot by name ("PyBot get me 5 oak logs"), or to all bots ("bots come here")
+        if name in low or low.startswith(("bots", "everyone", "all bots", "hey bot", "bot ")):
+            self.instruct(t, sender)
+
+    def instruct(self, text: str, sender: str = "app"):
+        """Do what a player (chat) or the app asks. Simple phrases work without an AI; anything else goes to the AI."""
+        t = re.sub(re.escape(self.bot.username), "", text, flags=re.I)
+        t = re.sub(r"^\W*(hey|ok|okay|yo|please|bots?|everyone|all bots)\b", "", t.strip(), flags=re.I).strip(" ,:!.?")
+        self._note(f"instruction from {sender}: {t}")
+        bot = self.bot
+        low = t.lower()
+        if re.fullmatch(r"(stop|halt|cancel|freeze|stay|stay still|wait)( it| that| now| please)?", low.strip(" !.")):
+            self.stop_goal()
+            bot.stop()
+            bot.chat("Stopped.")
+            return
+        # 1) big goals ("get to the end", "beat the game", "go to the nether", "get diamonds"...)
+        goal = match_goal(t)
+        if goal:
+            self.start_goal(goal, sender)
+            return
+        # 2) questions are answered from the game's own data (and the wiki / AI)
+        if QUESTION.search(t) and not re.search(r"\b(can|could) you\b(?!.*\?$)", low) and \
+                not re.search(r"\bwhere\b.*\bfind\b", low):
+            threading.Thread(target=self.answer, args=(t, sender), daemon=True).start()
+            return
+        # 3) with an AI: it works out anything else and plans it with all the bot's tools
+        if self.llm.configured:
+            quick, _ = interpret(t, bot.gd)
+            hint = f" (a quick guess at the meaning is: {quick[1:]})" if quick else ""
+            self._note("the AI is working out what that means...")
+            self.submit(f"{sender} says: \"{t}\".{hint} Work out exactly what they want (anything a Minecraft player "
+                        f"can do; for big goals use achieve_goal), say in one short chat line what you'll do, then do "
+                        f"it with your tools. If it's unclear, ask one short question in chat.", source=sender)
+            return
+        # 4) without an AI: understand the sentence from the game data
+        if re.search(r"\bwhere\b.*\bfind\b|\bfind\b", low):
+            kind, thing = find_thing(t, bot.gd)
+            if thing:
+                bot.chat(f"Looking for {thing.replace('_', ' ')}...")
+                threading.Thread(target=self._chat_command, args=(sender, f"!find {thing}"), daemon=True).start()
+                return
+        cmd, why = interpret(t, bot.gd)
+        self._note(why + (f" -> {cmd}" if cmd else ""))
+        if cmd:
+            bot.chat("On it: " + why.replace("understood: ", "").replace("_", " "))
+            threading.Thread(target=self._chat_command, args=(sender, cmd), daemon=True).start()
+        else:
+            bot.chat(f"Sorry {sender}, I don't know how to do that yet. Try naming what you want, like "
+                     f"'get 10 torches', 'kill the zombie', 'go to the nether' or 'get to the end'.")
+
+    # ------------------------------------------------------------------ goals & questions
+    def start_goal(self, goal: str, sender: str = "app"):
+        from .trainer import Trainer
+        self.stop_goal()
+        tr = Trainer(self, 12)
+        self.goal_trainer = tr
+        steps = [m.name for m in tr.curriculum]
+        todo = steps[:steps.index(goal) + 1]
+        self.bot.chat(f"OK {sender}! Goal: {goal.replace('_', ' ')}. That's up to {len(todo)} steps "
+                      f"({todo[0].replace('_', ' ')} -> ... -> {goal.replace('_', ' ')}). Starting now.")
+
+        def run():
+            try:
+                res = tr.run_until(goal)
+            except Exception as e:  # noqa: BLE001
+                res = f"goal failed: {e}"
+            self._note(f"goal {goal}: {res}")
+            self.bot.chat(res[:250])
+        threading.Thread(target=run, name="goal", daemon=True).start()
+
+    def stop_goal(self):
+        tr = getattr(self, "goal_trainer", None)
+        if tr and tr.running:
+            tr.stop()
+
+    def answer(self, question: str, sender: str = "app"):
+        gd, bot = self.bot.gd, self.bot
+        low = question.lower()
+        kind, thing = find_thing(question, gd)
+        text = None
+        if thing:
+            if kind == "mob":
+                drops = sorted(gd.entity_drops.get(thing, []))
+                text = f"{thing.replace('_', ' ')} drops: {', '.join(drops) or 'nothing'}"
+            elif re.search(r"\b(make|craft|get|smelt|recipe|obtain)\b", low) and thing in gd.item_ids:
+                text = gd.describe_item(thing)
+            elif thing in gd.block_index and re.search(r"\b(mine|break|tool|pickaxe|drop|hard)\b", low):
+                text = gd.describe_block(thing)
             else:
-                self.bot.chat(f"{sender}: no AI endpoint configured yet. Try !help")
+                text = gd.describe_item(thing) if thing in gd.item_ids else gd.describe_block(thing)
+        if not text and self.llm.configured:
+            self.submit(f"{sender} asks: \"{question}\". Answer briefly in chat (use recipe/block_info/wiki).", sender)
+            return
+        if not text:
+            try:
+                text = self.wiki.lookup(question, 400)
+            except Exception:  # noqa: BLE001
+                text = "I don't know that one."
+        lines = [ln.strip() for ln in text.replace("\n", " | ").split(" | ") if ln.strip()]
+        msg = ""
+        for ln in lines:
+            if len(msg) + len(ln) > 230:
+                bot.chat(msg)
+                msg = ""
+            msg += (" | " if msg else "") + ln
+        if msg:
+            bot.chat(msg)
+        self._note(f"answered: {text[:200]}")
 
     # ================================================================== chat commands (no LLM needed)
     def _chat_command(self, sender, text):
@@ -178,6 +473,23 @@ class Agent:
                 e = bot.entities.nearest(bot.position, lambda e: e.name == sender, 512)
                 if e:
                     bot.chat(bot.follow(e, 3, 300))
+            elif cmd == "find" and args:
+                what = args[0]
+                if what in bot.gd.entity_type_ids:
+                    e = bot.entities.nearest(bot.position, lambda x: x.type == what, 128)
+                    if not e:
+                        bot.chat(f"no {what} nearby")
+                    else:
+                        bot.goto(GoalNear(e.x, e.y, e.z, 3), timeout=180)
+                        bot.chat(f"found a {what}")
+                else:
+                    pts = bot.find_blocks(what, 128, 1)
+                    if not pts:
+                        bot.chat(f"no {what} within 128 blocks")
+                    else:
+                        from ..bot.pathfinder import GoalLookAt
+                        bot.goto(GoalLookAt(*pts[0], reach=3.5), timeout=240)
+                        bot.chat(f"found {what} at {pts[0][0]} {pts[0][1]} {pts[0][2]}")
             elif cmd == "goto" and len(args) >= 3:
                 bot.goto(float(args[0]), float(args[1]), float(args[2]), timeout=600)
                 bot.chat(f"arrived {bot.block_pos}")
