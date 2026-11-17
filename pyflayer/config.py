@@ -52,7 +52,7 @@ DEFAULTS: dict = {
         "temperature": 0.3,
         "max_tokens": 400,           # short answers = fast decisions
         "timeout": 120,
-        "max_steps_per_task": 40,
+        "max_steps_per_task": 0,         # 0 = no step limit (the task time limit still applies)
     },
     "agent": {
         "allow_cheats": False,       # allow /locate etc. on the local server

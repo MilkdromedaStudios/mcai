@@ -337,12 +337,14 @@ class MinecraftServer:
         if self.proc and self.proc.poll() is None:
             return True
         jar = self.prepare(progress)
+        self._kill_stale()
         cmd = [self.java, *self.jvm_args(), "-jar", str(jar), "--nogui"]
         log.info("Starting Minecraft server %s ...", self.version)
         self.ready.clear()
         self.status = "starting"
         self.proc = subprocess.Popen(cmd, cwd=self.dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, bufsize=1, env=_java_env())
+        (self.dir / "server.pid").write_text(str(self.proc.pid))
         self._want_running = True
         self._reader = threading.Thread(target=self._read_output, name="mc-server-out", daemon=True)
         self._reader.start()
@@ -352,6 +354,26 @@ class MinecraftServer:
         if wait:
             return self.wait_ready(timeout)
         return True
+
+    def _kill_stale(self):
+        """A server left running by a crashed/killed earlier run holds the world lock: stop it."""
+        pid_file = self.dir / "server.pid"
+        try:
+            pid = int(pid_file.read_text())
+            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace")
+        except (OSError, ValueError):
+            return
+        if "server.jar" in cmdline and "java" in cmdline:
+            log.warning("stopping a leftover Minecraft server from an earlier run (pid %s)", pid)
+            import signal
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(60):
+                if not Path(f"/proc/{pid}").exists():
+                    break
+                time.sleep(0.5)
+            else:
+                os.kill(pid, signal.SIGKILL)
+                time.sleep(1)
 
     def wait_ready(self, timeout: float = 600) -> bool:
         end = time.time() + timeout

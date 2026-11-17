@@ -51,6 +51,10 @@ class Agent:
         self.llm = llm or LLM(cfg["llm"])
         self.server = server
         self.scanner = Scanner(bot)
+        from .watcher import Blackboard, Watcher
+        self.board = Blackboard()                  # shared notes between the worker AI and the watcher AI
+        self.watcher = Watcher(self)
+        self.board.on_post = lambda line: self._note(line)
         self.tools = ToolBox(self)
         self.log = logging.getLogger("pyflayer.agent")
         self.tasks: queue.Queue = queue.Queue()
@@ -85,9 +89,11 @@ class Agent:
         self._thread.start()
         self._reflex_thread = threading.Thread(target=self._reflex_loop, name="reflexes", daemon=True)
         self._reflex_thread.start()
+        self.watcher.start()
 
     def stop(self):
         self.running = False
+        self.watcher.stop()
         self.bot.stop()
         self.brain.end_session("stopped")
 
@@ -407,13 +413,18 @@ class Agent:
             return
         idle = b.current_action == "idle"
         hostile = b.entities.nearest(b.position, lambda e: e.hostile and e.type not in ("ender_dragon",), 12)
+        t_hurt, attacker_id, _ = b.last_hurt
+        attacker = b.entities.get(attacker_id) if time.time() - t_hurt < 3 else None
+        if attacker and attacker.type not in ("ender_dragon",) and attacker.distance_to(*b.position) < 8:
+            hostile = attacker       # provoked neutral mobs (endermen, piglins, wolves...) count too
         dist = b.entity_distance(hostile) if hostile else 99
         action = None
         if hostile and b.health <= 8 and dist < 8:
             action = ("recover", hostile)
         elif hostile and hostile.type == "creeper" and dist < 5:
             action = ("creeper", hostile)
-        elif hostile and dist < 3.5 and hostile.type not in ("creeper", "enderman") and b.health > 8:
+        elif hostile and dist < 3.5 and hostile.type != "creeper" and (hostile.type != "enderman" or hostile is attacker) \
+                and b.health > 8:
             armed = max([b.gd.attack_damage(i.name) for i in b.inventory.items()] + [1.0]) >= 4
             weak = hostile.type in ("silverfish", "endermite", "slime", "magma_cube", "zombie", "husk")
             action = ("fight", hostile) if (armed or (weak and b.health > 14)) else ("evade", hostile)
@@ -506,13 +517,14 @@ class Agent:
         """Run one task with the LLM in a tool-calling loop. Returns (summary, success)."""
         if not self.llm.configured:
             raise LLMNotConfigured("LLM endpoint not configured (set llm.base_url / llm.api_key in config.json)")
-        max_steps = max_steps or self.cfg["llm"].get("max_steps_per_task", 40)
+        max_steps = max_steps or self.cfg["llm"].get("max_steps_per_task", 0) or 10 ** 9   # 0 = unlimited
         self.current_task = task
         self.task_done.clear()
         self.task_result = ("", False)
         self.trace = []
         t0 = time.time()
         self._note(f"TASK: {task}")
+        self.board.post("worker", f"started task: {task}")
         self.brain.log("task_start", task, 1.5)
         messages = self._context_messages(task)
         schemas = self.tools.schemas()
@@ -524,6 +536,9 @@ class Agent:
                     self.finish_task("time limit reached", False)
                     break
                 step += 1
+                notes = self.board.unread()
+                if notes:   # what the watcher AI saw since the last decision
+                    messages.append({"role": "user", "content": "Teammate (watcher) reports:\n" + "\n".join(notes[-8:])})
                 try:
                     reply = self.llm.chat(self._trim(messages), schemas)
                 except LLMNotConfigured:
@@ -574,6 +589,7 @@ class Agent:
             self.brain.log("task_end", f"{task} -> {'SUCCESS' if success else 'FAILED'}: {summary} ({secs:.0f}s)", 2.0)
             self.brain.bump("tasks_succeeded" if success else "tasks_failed")
             self._note(f"TASK {'DONE' if success else 'FAILED'}: {summary}")
+            self.board.post("worker", f"{'finished' if success else 'failed'} task: {task} - {summary[:120]}")
             try:
                 self._learn_from_task(task, summary, success, secs)
             except Exception as e:  # noqa: BLE001

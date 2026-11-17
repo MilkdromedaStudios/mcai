@@ -414,6 +414,13 @@ class ToolBox:
             a.brain.remember(str(fact), str(topic), 0.8, "agent")
             return "remembered"
 
+        @add("team_notes", "Read the latest notes from your watcher teammate (threats, opportunities, advice), "
+             "optionally posting a note for it.", {"post": S("optional note to post")})
+        def team_notes(post=None):
+            if post:
+                a.board.post("worker", str(post)[:200])
+            return "\n".join(a.board.recent(12)) or "no notes yet"
+
         @add("set_waypoint", "Remember the current position (or x,y,z) under a name, e.g. 'base', 'iron_cave'.",
              {"name": S("name"), "x": I("x"), "y": I("y"), "z": I("z"), "note": S("note")}, ("name",))
         def set_waypoint(name, x=None, y=None, z=None, note=""):

@@ -260,6 +260,92 @@ def shoot_bow(bot, target) -> bool:
     return True
 
 
+def _clear_shot(bot, e) -> bool:
+    """Ray from our eye to the entity: True if no solid block is in the way."""
+    ex, ey, ez = bot.eye
+    tx, ty, tz = e.x, e.y + 1.0, e.z
+    d = math.dist((ex, ey, ez), (tx, ty, tz))
+    steps = max(2, int(d * 3))
+    for i in range(1, steps - 2):
+        f = i / steps
+        s = bot.world.get(math.floor(ex + (tx - ex) * f), math.floor(ey + (ty - ey) * f), math.floor(ez + (tz - ez) * f))
+        if s is None or (bot.gd.has_collision[s] and not bot.gd.is_liquid[s]):
+            return False
+    return True
+
+
+def _move_for_shot(bot, e):
+    """Back away from a crystal's tower (toward the island centre / away from it) until we can see it."""
+    for dist in (20, 28, 36):
+        dx, dz = bot.state.x - e.x, bot.state.z - e.z
+        n = math.hypot(dx, dz) or 1.0
+        try:
+            bot.goto(GoalXZ(e.x + dx / n * dist, e.z + dz / n * dist, 3), timeout=40, dig=False)
+        except ActionError:
+            pass
+        if _clear_shot(bot, e):
+            return True
+    return False
+
+
+def _dragon_step(bot):
+    """One decision of the dragon fight. Returns a final message when the fight is over, else None."""
+    if bot.health < 10 and bot.food > 0:
+        try:
+            bot.eat()
+        except ActionError:
+            pass
+    crystals = bot.entities.within(bot.position, 200, lambda e: e.type == "end_crystal")
+    dragon = bot.entities.nearest(bot.position, lambda e: e.type == "ender_dragon", 300)
+    # 1) an enderman that hit us (or is right next to us) gets dealt with first
+    t_hurt, attacker_id, _ = bot.last_hurt
+    enderman = bot.entities.get(attacker_id) if time.time() - t_hurt < 4 else None
+    if not (enderman and enderman.type == "enderman"):
+        enderman = bot.entities.nearest(bot.position, lambda e: e.type == "enderman", 2.5)
+    if enderman and enderman.type == "enderman":
+        bot.combat.fight_until(enderman, None, 25)
+        return None
+    if crystals:
+        c = crystals[0]
+        if not _clear_shot(bot, c):
+            _move_for_shot(bot, c)
+        if _clear_shot(bot, c) and shoot_bow(bot, c):
+            bot.wait_ticks(10)
+            return None
+        # no bow / no line of sight: pillar up next to the tower and punch it
+        try:
+            bot.goto(GoalNear(c.x, c.y - 1, c.z, 2.5), timeout=180)
+            bot.attack(c, wait_cooldown=False)
+        except ActionError as e:
+            log.info("crystal approach failed: %s", e)
+        return None
+    if not dragon:
+        won = any("Free the End" in text for _, _, text in list(bot.chat_log)[-30:])
+        if won or bot.find_blocks("end_gateway", 200, 1):
+            return "the ender dragon is dead - the game is beaten!"
+        bot.wait_ticks(20)
+        return None
+    # wait at the fountain for the perch
+    if math.hypot(dragon.x, dragon.z) < 12 and dragon.y < 75:
+        try:
+            bot.goto(GoalNear(dragon.x, dragon.y, dragon.z, 3), timeout=10, dig=False, place=False)
+        except ActionError:
+            pass
+        for _ in range(10):
+            if bot.entity_distance(dragon) <= 3.0:
+                bot.attack(dragon)
+            bot.wait_ticks(2)
+    else:
+        if math.hypot(bot.state.x, bot.state.z) > 8:
+            try:
+                bot.goto(GoalXZ(0, 4, 5), timeout=30, dig=False)
+            except ActionError:
+                pass
+        if not shoot_bow(bot, dragon):
+            bot.wait_ticks(10)
+    return None
+
+
 def fight_dragon(bot, timeout: float = 1200) -> str:
     """Basic dragon strategy: destroy end crystals (bow or melee from a pillar), then hit the dragon when it
     perches on the fountain. Eats and retreats when hurt."""
@@ -267,48 +353,14 @@ def fight_dragon(bot, timeout: float = 1200) -> str:
         raise ActionError("not in the End")
     end = time.time() + timeout
     while time.time() < end:
-        bot._check()
-        if bot.health < 10 and bot.food > 0:
-            try:
-                bot.eat()
-            except ActionError:
-                pass
-        crystals = bot.entities.within(bot.position, 150, lambda e: e.type == "end_crystal")
-        dragon = bot.entities.nearest(bot.position, lambda e: e.type == "ender_dragon", 300)
-        if crystals:
-            c = crystals[0]
-            if shoot_bow(bot, c):
-                bot.wait_ticks(10)
-                continue
-            # climb the pillar with blocks and punch the crystal
-            try:
-                bot.goto(GoalNear(c.x, c.y - 1, c.z, 2.5), timeout=180)
-                bot.attack(c, wait_cooldown=False)
-            except ActionError as e:
-                log.info("crystal approach failed: %s", e)
+        try:
+            bot._check()
+            res = _dragon_step(bot)
+        except ActionError as e:
+            if "died" in str(e) or "disconnected" in str(e):
+                raise
+            time.sleep(1)          # a survival reflex took over for a moment; keep fighting
             continue
-        if not dragon:
-            if bot.find_blocks("end_gateway", 200, 1) or not bot.entities.nearest(
-                    bot.position, lambda e: e.type == "ender_dragon", 600):
-                return "the ender dragon is dead (or not loaded) - the game is beaten!"
-            bot.wait_ticks(20)
-            continue
-        # wait at the fountain for the perch
-        if math.hypot(dragon.x, dragon.z) < 12 and dragon.y < 75:
-            try:
-                bot.goto(GoalNear(dragon.x, dragon.y, dragon.z, 3), timeout=10, dig=False, place=False)
-            except ActionError:
-                pass
-            for _ in range(10):
-                if bot.entity_distance(dragon) <= 3.0:
-                    bot.attack(dragon)
-                bot.wait_ticks(2)
-        else:
-            if math.hypot(bot.state.x, bot.state.z) > 8:
-                try:
-                    bot.goto(GoalXZ(0, 4, 5), timeout=30, dig=False)
-                except ActionError:
-                    pass
-            if not shoot_bow(bot, dragon):
-                bot.wait_ticks(10)
+        if res:
+            return res
     return "dragon fight timed out"

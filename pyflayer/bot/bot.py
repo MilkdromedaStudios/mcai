@@ -142,6 +142,7 @@ class Bot(ActionsMixin):
         self._last_tick_time = 0.0
         self.tps_measured = 20.0
         self.abilities_flags = 0
+        self.last_hurt = (0.0, -1, -1)      # (time, attacker entity id, direct entity id)
         self.lock = threading.RLock()     # serialises high-level actions
         self._init_actions()
         from .combat import Combat
@@ -582,6 +583,10 @@ class Bot(ActionsMixin):
     def _play_damage_event(self, r):
         eid = r.varint()
         if eid == self.entity_id:
+            r.varint()                       # damage type
+            cause = r.varint() - 1           # entity that caused it (-1 = none)
+            direct = r.varint() - 1          # direct entity (arrow, fireball...)
+            self.last_hurt = (time.time(), cause, direct)
             self.events.emit("hurt")
 
     # ------------------------------------------------------------------ players / chat

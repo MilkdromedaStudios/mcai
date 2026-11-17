@@ -540,7 +540,7 @@ class ActionsMixin:
     def flee(self, from_pos, distance: float = 16, timeout: float = 20) -> str:
         try:
             self.goto(GoalInvert(from_pos[0], from_pos[1], from_pos[2], distance), timeout=timeout,
-                      dig=False, place=False)
+                      dig=False, place=True)
         except ActionError as e:
             return f"flee incomplete: {e}"
         return "fled"
@@ -887,6 +887,18 @@ class ActionsMixin:
                 self._wait(1)
         return picked
 
+    def _reachable(self, pos) -> bool:
+        """Fast check (<~0.3 s) that a block can be mined: not touching lava/water, and a path exists."""
+        x, y, z = pos
+        for dx, dy, dz in ((0, 1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1), (0, -1, 0)):
+            s = self.world.get(x + dx, y + dy, z + dz)
+            if s is not None and self.gd.is_lava[s]:
+                return False
+        if self.distance_to_block(pos) <= REACH - 0.3:
+            return True
+        res = self.pathfinder.find(self._start_node(), GoalLookAt(x, y, z, reach=4.0), max_nodes=4000, timeout=0.3)
+        return res.status == "success" or (res.status == "timeout" and len(res.steps) > 3)
+
     def find_blocks(self, names, radius: float = 64, count: int = 16):
         if isinstance(names, str):
             names = [names]
@@ -923,7 +935,14 @@ class ActionsMixin:
             ex, ey, ez = self.eye
             cands.sort(key=lambda p: math.dist((ex, ey, ez), (p[0] + 0.5, p[1] + 0.5, p[2] + 0.5))
                        + max(0, p[1] - ey) * 1.5)
-            target = cands[0]
+            target = None
+            for p in cands[:8]:                      # instant reachability check, nearest first
+                if self._reachable(p):
+                    target = p
+                    break
+                self.unreachable[p] = time.time()
+            if target is None:
+                continue
             bname = self.gd.block_name(self.world.get(*target))
             if self.gd.requires_tool(bname):
                 names_inv = [it.name for it in self.inventory.items()]
@@ -1182,6 +1201,7 @@ class ActionsMixin:
                 have += n * val
             took = 0
             deadline = time.time() + (timeout or count * 10.5 + 15)
+            stalled_since = None
             while took < count and time.time() < deadline:
                 self._check()
                 out = win.slots[2]
@@ -1190,6 +1210,21 @@ class ActionsMixin:
                     took = self.inventory.count(output) - before
                 elif win.slots[0] is None:
                     break
+                # fuel check: property 0 = burn time left; empty fuel slot + not burning = stalled
+                burning = win.properties.get(0, 0) > 0
+                if not burning and win.slots[1] is None and win.slots[0] is not None:
+                    fuel = next((n for n, v in sorted(((n, _fuel_value(self.gd, n)) for n in self.inventory.counts()),
+                                                      key=lambda t: -t[1]) if v > 0 and n != inp), None)
+                    if fuel:
+                        left = win.slots[0].count if win.slots[0] else 0
+                        n = min(self.inventory.count(fuel), math.ceil(left / _fuel_value(self.gd, fuel)))
+                        self._put_into(1, fuel, max(1, n))
+                        stalled_since = None
+                    else:
+                        stalled_since = stalled_since or time.time()
+                        if time.time() - stalled_since > 3:
+                            raise ActionError(f"furnace ran out of fuel with {win.slots[0].count} {inp} left; "
+                                              f"get coal/charcoal/planks and smelt again")
                 time.sleep(0.5)
         finally:
             self.close_window()
