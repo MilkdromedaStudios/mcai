@@ -215,6 +215,23 @@ The app uses a dark theme.
 
 **Overnight training:** `pyflayer train --hours 7` (the default comes from `training.hours`).
 
+The bot now **begins with a concrete milestone** (collect wood) instead of
+randomly walking 140 blocks first. It attempts a real action, verifies the
+inventory or world result, and records success/failure. When an AI model claims
+to have completed a task without meeting the goal, the trainer tries its built-in
+resource planner. If a required resource cannot be found, the bot tries three
+short relocation surveys, then reports **TRAINING BLOCKED** with the specific
+last error rather than walking forever or silently going idle. A disconnect or
+unexpected exception shows **TRAINING ERROR**. The desktop status includes the
+current goal, attempts, successes and failures.
+
+Reports and resumable memory are saved under `data/training/` and
+`data/brain/`, even when the bot stops early. This trains *action skills and
+memory*, not the weights of an external language model. Keep the app open for
+an overnight session; the one-bot training button will not launch duplicate
+training threads. If it reports blocked/error, check the training report and
+`data/logs/pyflayer.log` for the reason.
+
 **In-game chat** (from any player; set `agent.owner` to restrict it to one player):
 
 ```
