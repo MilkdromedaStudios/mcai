@@ -30,19 +30,69 @@ furnaces, pathfinding with digging, combat, scanning, the LLM tool loop and the 
 
 ## Install on Raspberry Pi OS
 
-Requirements: **64-bit** Raspberry Pi OS (Bookworm/Trixie), Pi 4 or Pi 5 with 4–8 GB RAM recommended, about 1 GB of disk.
-Minecraft 26.x needs Java 25, which only exists for 64-bit ARM.
+**You need:** 64-bit Raspberry Pi OS (Bookworm or Trixie), a Raspberry Pi 4 or 5 with 4–8 GB RAM, about 1 GB of free
+disk, and an internet connection for the first start. Minecraft 26.x needs Java 25, which only exists for 64-bit ARM;
+check with `uname -m`, which must print `aarch64`.
+
+### Option A: download the latest release (recommended)
+
+1. Open the [Releases page](https://github.com/MilkdromedaStudios/mcai/releases/latest) and note the version (e.g. `v1.0.0`).
+2. In a terminal on the Pi, download and unpack it (replace `v1.0.0` with that version):
+
+   ```bash
+   curl -L -o pyflayer.tar.gz https://github.com/MilkdromedaStudios/mcai/releases/download/v1.0.0/pyflayer-v1.0.0.tar.gz
+   tar xzf pyflayer.tar.gz && cd pyflayer-v1.0.0
+   ```
+
+3. Run the installer (it asks for your password once to install system packages):
+
+   ```bash
+   ./install.sh
+   ```
+
+### Option B: install from source
 
 ```bash
-git clone <this repo> pyflayer && cd pyflayer
+git clone https://github.com/MilkdromedaStudios/mcai pyflayer && cd pyflayer
 ./install.sh
 ```
 
-The installer installs `python3-tk python3-venv python3-numpy`, creates `.venv`, adds **PyFlayer AI** to the
-Games menu and the desktop, installs a `pyflayer` launcher in `~/.local/bin`, and downloads the server, Java
-and game data. Add `--nightly 23:00` to train automatically every night.
+### What the installer does
 
-Then set your AI endpoint (any OpenAI-compatible server: OpenAI, a LAN llama.cpp/vLLM/Ollama box, …):
+- installs `python3-tk python3-venv python3-numpy` with apt;
+- creates a private Python environment in `.venv` with the dependencies;
+- adds **PyFlayer AI** to the Games menu and the desktop, plus a `pyflayer` command in `~/.local/bin`;
+- downloads the Minecraft 26.3 server, Java 25 and the game data (about 150 MB, one time).
+
+Options: `./install.sh --nightly 23:00` also trains automatically every night at 23:00; `./install.sh --no-setup`
+skips the downloads (they then happen on first start).
+
+### After installing
+
+1. Start **PyFlayer AI** from the Games menu (or run `~/.local/bin/pyflayer gui`).
+2. Click **Settings**, pick an AI provider (OpenAI, OpenRouter, Anthropic, Gemini, Groq, Ollama, …), paste your
+   API key, click **Test AI connection**, then **Save**.
+3. Click **Start all** (server + bots), or **Train overnight**.
+4. To join in Minecraft yourself, open the **Play / Test** tab and use one of the addresses shown there.
+
+**Updating:** download the new release and run `./install.sh` again (your `data/` folder with the world and brain
+can be copied over), or with Option B run `git pull && ./install.sh --no-setup`.
+
+**Uninstalling:** delete the folder, `~/.local/bin/pyflayer`, `~/.local/share/applications/pyflayer.desktop` and,
+if you enabled nightly training, run `systemctl --user disable --now pyflayer-train.timer`.
+
+### Releases (for maintainers)
+
+GitHub Actions runs the tests on every push and pull request. To publish a release, push a version tag:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+The workflow then builds `pyflayer-v1.0.0.tar.gz` / `.zip` (with SHA-256 checksums) and attaches them to a new
+GitHub Release. You can also run it by hand from the Actions tab (**Test and release → Run workflow**).
+
+You can also set the AI endpoint from the command line (any OpenAI-compatible server):
 
 ```bash
 ~/.local/bin/pyflayer config llm.base_url=http://192.168.1.50:8000/v1 llm.api_key=sk-... llm.model=my-model
