@@ -116,12 +116,12 @@ check with `uname -m`, which must print `aarch64`.
 
 ### Option A: download the latest release (recommended)
 
-1. Open the [Releases page](https://github.com/MilkdromedaStudios/mcai/releases/latest) and note the version (e.g. `v2.0.1`).
-2. In a terminal on the Pi, download and unpack it (replace `v2.0.1` with that version):
+1. Open the [Releases page](https://github.com/MilkdromedaStudios/mcai/releases/latest) and note the version (e.g. `v2.0.2`).
+2. In a terminal on the Pi, download and unpack it (replace `v2.0.2` with that version):
 
    ```bash
-   curl -L -o pyflayer.tar.gz https://github.com/MilkdromedaStudios/mcai/releases/download/v2.0.1/pyflayer-v2.0.1.tar.gz
-   tar xzf pyflayer.tar.gz && cd pyflayer-v2.0.1
+   curl -L -o pyflayer.tar.gz https://github.com/MilkdromedaStudios/mcai/releases/download/v2.0.2/pyflayer-v2.0.2.tar.gz
+   tar xzf pyflayer.tar.gz && cd pyflayer-v2.0.2
    ```
 
 3. Run the installer (it asks for your password once to install system packages):
@@ -168,10 +168,10 @@ if you enabled nightly training, run `systemctl --user disable --now pyflayer-tr
 GitHub Actions runs the tests on every push and pull request. To publish a release, push a version tag:
 
 ```bash
-git tag v2.0.1 && git push origin v2.0.1
+git tag v2.0.2 && git push origin v2.0.2
 ```
 
-The workflow then builds `pyflayer-v2.0.1.tar.gz` / `.zip` (with SHA-256 checksums) and attaches them to a new
+The workflow then builds `pyflayer-v2.0.2.tar.gz` / `.zip` (with SHA-256 checksums) and attaches them to a new
 GitHub Release. You can also run it by hand from the Actions tab (**Test and release → Run workflow**).
 
 You can also set the AI endpoint from the command line (any OpenAI-compatible server):
