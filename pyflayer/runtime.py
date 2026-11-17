@@ -253,17 +253,22 @@ class Runtime:
 
     def start_training(self, hours: float | None = None, background: bool = True, name: str | None = None):
         from .agent.trainer import Trainer
-        s = self.session(name)
-        self.start_agent(s.name)
-        if self.server and self.cfg["training"].get("keep_inventory", True):
-            self.server.command("gamerule keep_inventory true")
-        if self.server:
-            self.server.command(f"difficulty {self.cfg['server']['difficulty']}")
-            self.server.command("gamerule spawn_monsters true")
-        s.trainer = Trainer(s.agent, hours or self.cfg["training"]["hours"])
-        self.status = f"{s.name}: training"
-        s.trainer.start(background=background)
-        return s.trainer
+        with self._lock:
+            s = self.session(name)
+            if s.trainer and s.trainer.running:
+                # Double-clicking Train must not start two controllers competing
+                # over the same movement controls or duplicate wiki workers.
+                return s.trainer
+            self.start_agent(s.name)
+            if self.server and self.cfg["training"].get("keep_inventory", True):
+                self.server.command("gamerule keep_inventory true")
+            if self.server:
+                self.server.command(f"difficulty {self.cfg['server']['difficulty']}")
+                self.server.command("gamerule spawn_monsters true")
+            s.trainer = Trainer(s.agent, hours if hours is not None else self.cfg["training"]["hours"])
+            self.status = f"{s.name}: training"
+            s.trainer.start(background=background)
+            return s.trainer
 
     def start_all(self, training: bool = False, hours: float | None = None):
         """Start every profile (staggered so a Pi is not hammered by 5 logins at once)."""
