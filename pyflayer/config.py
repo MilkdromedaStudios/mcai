@@ -18,6 +18,7 @@ DEFAULTS: dict = {
         "auto_start": True,          # start the local server when the bot/agent starts
         "host": "127.0.0.1",
         "port": 25565,
+        "auto_port_fallback": True,  # if port is busy, choose a free local port instead of crashing
         "memory_mb": 0,              # 0 = auto from system RAM
         "view_distance": 7,          # 7 chunks ~= 112 blocks -> enough for the 100 block scanner
         "simulation_distance": 4,
