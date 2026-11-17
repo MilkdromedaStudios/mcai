@@ -72,11 +72,13 @@ skips the downloads (they then happen on first start).
 1. Start **PyFlayer AI** from the Games menu (or run `~/.local/bin/pyflayer gui`).
 2. Click **Settings**, pick an AI provider (OpenAI, OpenRouter, Anthropic, Gemini, Groq, Ollama, …), paste your
    API key, click **Test AI connection**, then **Save**.
-3. Click **Start all** (server + bots), or **Train overnight**.
-4. To join in Minecraft yourself, open the **Play / Test** tab and use one of the addresses shown there.
+3. Click **Server**, pick a bot card, then **Start bot** (or **Train overnight**).
+4. To join in Minecraft yourself, use one of the addresses on the **Join:** line at the bottom of the window.
 
-**Updating:** download the new release and run `./install.sh` again (your `data/` folder with the world and brain
-can be copied over), or with Option B run `git pull && ./install.sh --no-setup`.
+**Updating:** open **Settings → Check for updates** (or run `~/.local/bin/pyflayer update`). It downloads the newest
+release, checks its checksum, installs it and keeps your `data/` folder (world, bots' memory) and `config.json`;
+the previous version is saved in `data/updates/`. The app also tells you at start-up when an update is available.
+For a source install (Option B) the updater runs `git pull`.
 
 **Uninstalling:** delete the folder, `~/.local/bin/pyflayer`, `~/.local/share/applications/pyflayer.desktop` and,
 if you enabled nightly training, run `systemctl --user disable --now pyflayer-train.timer`.
@@ -102,22 +104,30 @@ You can also do this from **Settings** in the app. With no endpoint set, everyth
 
 ## Using it
 
-**Desktop app:** `pyflayer gui` (or the menu entry). Use *Start server*, *Connect bot*, *Start AI agent* or
-*Start overnight training*. Tabs: Activity, Chat/Tasks, Server console, Map/Scan (live minimap), Brain.
+**Desktop app:** `pyflayer gui` (or the menu entry). One simple screen:
+
+- **Bot cards** at the top: click a card to select that bot (it shows online/offline, what it is doing and its
+  health); **+ New bot** adds one (up to 5).
+- **Start bot**, **Stop**, **Server** (start/stop your own server), **Join server** (connect the selected bot to
+  another server, e.g. a friend's PyFlayer server), **Run from model file** (load a saved `.json.gz` brain into the
+  selected bot and start it), **Train overnight**, **Settings**.
+- Below: the selected bot's status, its live activity log, and the **Join:** addresses of your server.
+
+On small screens (like the 7" Raspberry Pi touchscreen) the app switches to a compact layout automatically
+(force it with *Small-screen layout* in Settings); lists and Settings scroll with the mouse wheel or touch.
 
 **AI providers:** `pyflayer ai providers` lists presets (OpenAI/ChatGPT, OpenRouter, Anthropic, Gemini, Groq, DeepSeek, Mistral, Together, xAI, Ollama, LM Studio, or any custom OpenAI-compatible URL). Connect with `pyflayer ai use openrouter --key sk-or-...` (optionally `--model ...`), or choose one under Settings, where *Test AI connection* checks it.
 
-**Play with it yourself:** start the server (or *Start all*), open the **Play / Test** tab, and join with
-Minecraft Java 26.3 using the address shown there (the **public address** for other devices anywhere, your network address on the same Wi-Fi, or `localhost`). For the public address, forward TCP 25565 on your router to the Pi, or set `server.upnp=true` to have PyFlayer ask the router automatically. The server is offline mode, so any username works. The tab can make you operator, bring a bot
-to you, switch your gamemode, and set day/night or difficulty. The server prints the same join info.
+**Play with it yourself:** click **Server**, then join with Minecraft Java 26.3 using an address from the **Join:**
+line (the **public address** for other devices anywhere, your network address on the same Wi-Fi, or `localhost`). For the public address, forward TCP 25565 on your router to the Pi, or set `server.upnp=true` to have PyFlayer ask the router automatically. The server is offline mode, so any username works. Server commands (e.g. `op YourName`) can be typed in
+`pyflayer server`. The server prints the same join info.
 
-**Multiple bots (up to 5 on one server):** pick or add bots with the **Bot** selector (*+ Bot*) and use *Start all*,
-or `pyflayer bots add Builder`, then `pyflayer run --all` or `pyflayer train --all`. Each bot has its own brain
+**Multiple bots (up to 5 on one server):** add bots with **+ New bot** and start each from its card, or `pyflayer bots add Builder`, then `pyflayer run --all` or `pyflayer train --all`. Each bot has its own brain
 file (`data/brain/<name>.db`), agent and training report. Use `--bot NAME` to run one profile from the CLI.
 
 **Game rules:** the server runs in **Easy** difficulty with monsters on (zombies, skeletons, creepers spawn), and
 **keep inventory** is switched on for training, so deaths cost time but not gear. Change it in Settings
-(`server.difficulty`, `training.keep_inventory`) or with the buttons on the Play tab.
+(`server.difficulty`, `training.keep_inventory`).
 
 The app uses a dark theme.
 
@@ -173,7 +183,7 @@ nights of attempts, and they depend heavily on the world seed and on the LLM's q
 - **Bot:** numpy chunk storage; each section keeps the set of block states it contains, so searches skip
   about 99% of the world; vectorized palette unpacking; a strict 20 TPS tick loop that resyncs after hiccups;
   A* bounded by node and time budgets with partial paths; and LLM calls that never block physics or networking.
-- **GUI:** two refreshes per second, the minimap redraws every 3 s using numpy (about 10 ms), and nothing heavy
+- **GUI:** two refreshes per second, and nothing heavy
   runs on the UI thread.
 - Measured here: 265 chunks decoded during login, a 100-block block search in about 10 ms, a full 100-block
   scan in about 0.1–0.4 s, and the bot holding a steady 20.0 TPS.

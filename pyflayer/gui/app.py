@@ -125,7 +125,7 @@ class App:
     def _build(self):
         # ---- hero cards
         self.cards_scroll = ScrollFrame(self.root, padding=(6, 6, 6, 2), orient="horizontal",
-                                        height=96 if self.compact else 120)
+                                        height=76 if self.compact else 84)
         self.cards_scroll.pack(fill="x")
         self.cards_row = self.cards_scroll.inner
         self._rebuild_cards()
@@ -232,7 +232,8 @@ class App:
     def do_start(self):
         def go():
             self.rt.start_agent(self.rt.current)
-            if not self.rt.llm.configured:
+            if not self.rt.llm.configured and not getattr(self, "_ai_hint_shown", False):
+                self._ai_hint_shown = True
                 self.root.after(0, lambda: messagebox.showinfo(
                     "AI", "The bot is playing on its own (planner, survival, chat commands).\n"
                           "For the AI brain, open Settings and choose an AI provider + key."))
