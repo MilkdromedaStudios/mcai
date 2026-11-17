@@ -67,6 +67,23 @@ The app displays your actual per-bot brain and backup paths beneath the conversa
 
 ### If the Minecraft server exits during startup
 
+**Port conflict / "FAILED TO BIND TO PORT" / "Address already in use":**
+PyFlayer checks its TCP port *before* starting Minecraft. By default, if
+`server.port` (normally `25565`) is occupied, PyFlayer finds the next free
+port, saves it to `config.json`, rewrites `server.properties`, and connects
+the bot to that new port automatically. The desktop status and join address
+show the selected port (for example `localhost:25566`). It never stops or
+kills the process already using the old port. This can be disabled in Settings
+with `server.auto_port_fallback=false` if you need an exact port.
+
+If another **PyFlayer instance using the same world** is running, the app
+still refuses to start a duplicate server to avoid corrupting the world.
+Close the other instance first. To see what is listening on port 25565:
+
+```bash
+sudo ss -ltnp '( sport = :25565 )'
+```
+
 Check `data/server/26.3/server-console.log` (full captured output, including
 early errors) and `data/server/26.3/logs/latest.log` (vanilla Minecraft log).
 The app now includes these paths and an error excerpt in the startup exception.

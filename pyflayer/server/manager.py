@@ -7,6 +7,7 @@ Nothing is hardcoded per version: point it at another release id and it regenera
 from __future__ import annotations
 
 import collections
+import errno
 import hashlib
 import io
 import json
@@ -15,6 +16,7 @@ import os
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import tarfile
 import threading
@@ -273,6 +275,7 @@ class MinecraftServer:
         self._watchdog: threading.Thread | None = None
         self._start_lock = threading.RLock()
         self._owner_handle = None
+        self.port_notice = ""
 
     @property
     def dir(self) -> Path:
@@ -324,6 +327,9 @@ class MinecraftServer:
             "log-ips": "false",
         })
         props.update({k: str(v) for k, v in s.get("extra_properties", {}).items()})
+        # This port must match the bot connection and the app\'s Join address,
+        # even if an older extra_properties value specified a different port.
+        props["server-port"] = str(s["port"])
         props_path.write_text("#Minecraft server properties (managed by pyflayer)\n" +
                               "".join(f"{k}={v}\n" for k, v in sorted(props.items())))
 
@@ -359,6 +365,58 @@ class MinecraftServer:
         if handle is not None:
             handle.close()  # closing the FD releases its flock on Linux
 
+    @staticmethod
+    def _port_available(port: int) -> bool:
+        """Probe the wildcard bind used by the vanilla server, not localhost only."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind(("0.0.0.0", int(port)))
+            return True
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return False
+            raise RuntimeError(f"Cannot check Minecraft port {port}: {exc}") from exc
+
+    def _resolve_port(self) -> int:
+        """Move to a free local port instead of launching a server that cannot bind.
+
+        This never kills or attaches to the process occupying the original port.
+        The chosen port is saved to config.json and reflected in server.properties,
+        so the bot and Minecraft UI always use the same address.
+        """
+        requested = int(self.cfg["server"]["port"])
+        if not 1 <= requested <= 65535:
+            raise ValueError(f"Minecraft server port must be 1..65535, got {requested}")
+        if self._port_available(requested):
+            return requested
+        if not self.cfg["server"].get("auto_port_fallback", True):
+            raise RuntimeError(
+                f"Minecraft port {requested} is already in use. "
+                f"Find the owner with: sudo ss -ltnp '( sport = :{requested} )' "
+                "or turn on server.auto_port_fallback."
+            )
+        # Prefer the nearest higher port, then the conventional local range.
+        alternatives = list(range(requested + 1, min(65536, requested + 51)))
+        alternatives += list(range(25565, 25616))
+        for candidate in dict.fromkeys(alternatives):
+            if candidate == requested:
+                continue
+            if self._port_available(candidate):
+                self.cfg.set("server.port", candidate)
+                self.cfg.save()
+                self._write_files()
+                self.port_notice = (
+                    f"Port {requested} was occupied. Started Minecraft on {candidate} "
+                    f"instead. Join localhost:{candidate} (or use the address shown in the app)."
+                )
+                log.warning(self.port_notice)
+                return candidate
+        raise RuntimeError(
+            f"Minecraft port {requested} is occupied and no fallback port is available. "
+            f"Run: sudo ss -ltnp '( sport = :{requested} )' "
+            "to identify the other service. PyFlayer will not kill it."
+        )
+
     def _check_existing_server(self):
         """Never SIGTERM another server just because an old server.pid exists."""
         pid_file = self.dir / "server.pid"
@@ -383,12 +441,16 @@ class MinecraftServer:
         with self._start_lock:
             if self.proc and self.proc.poll() is None:
                 return True
+            if self._reader and self._reader.is_alive():
+                # A previous exited process may still be releasing its file lock.
+                self._reader.join(timeout=2)
             # Ownership is acquired before checking a stale PID to prevent two
             # apps from racing to launch servers into the same world.
             self._acquire_owner()
             try:
                 jar = self.prepare(progress)
                 self._check_existing_server()
+                self._resolve_port()
                 cmd = [self.java, *self.jvm_args(), "-jar", str(jar), "--nogui"]
                 log.info("Starting Minecraft server %s ...", self.version)
                 self.ready.clear()
