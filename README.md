@@ -283,6 +283,42 @@ Realistic expectations: the early and mid game (tools, iron, armor, food, diamon
 one night. The nether, stronghold and dragon stages are implemented but are hard for any bot. Expect several
 nights of attempts, and they depend heavily on the world seed and on the LLM's quality.
 
+## Adaptive skills, resource choices, and hazard movement
+
+**Nearest useful resource wins.** For generic wood tasks, the agent uses
+`gather_nearest_wood` / the deterministic planner. It checks loaded trees and
+gathers the nearest reachable species instead of demanding birch in an oak
+forest. Tree locations are refreshed when moving between chunks.
+
+**Practice is measured, not claimed.** Train overnight runs a dry-ground skill
+drill after every two curriculum attempts. The app also has a **Train one
+skill** button. Skills include nearest-resource selection, safe navigation,
+sprint-jumping on solid ground, and placing/reclaiming blocks. Every attempt is
+checked against real inventory, movement or world-state changes, and stored in
+the selected bot's brain. Use `skill_progress` through the AI to see its
+scores. Skills are certified only after **at least 7 actual successes in 8
+attempts and at least 85% accuracy**. These measured results also persist in
+brain backup files.
+
+**Emergency survival:**
+- The existing water-bucket clutch reflex reacts to an *accidental* real fall.
+  It no longer counts a successful clutch just because a click packet was sent;
+  it requires a server-side bucket inventory change and a safe landing.
+- Close-range combat no longer blindly sprints into known lava/unsafe gaps.
+  It gives such terrain to the pathfinder, which must confirm that any bridge
+  block exists before stepping onto it.
+- An experimental sprint-jump across exactly **one known lava gap with an
+  existing solid landing** is implemented but **disabled by default**. It
+  requires certified dry-ground jump and placement drills, good health/food,
+  and explicit `training.allow_advanced_moves=true` in Settings. It does
+  **not** yet attempt blind midair block clutching over lava or deliberately
+  create a fatal training fall. Those techniques still need controlled live
+  tests before they can be relied upon.
+
+The automated tests validate these controls and skill-score logic; they do
+not constitute a live proof of water-bucket timing or lava-gap safety on your
+Raspberry Pi. Use a disposable test world for experimental maneuvers.
+
 ## Performance and Raspberry Pi optimisations
 
 - **Server:** RAM picked automatically (1.8 GB on a 4 GB Pi, 3 GB on 8 GB), G1GC flags, `sync-chunk-writes=false`
