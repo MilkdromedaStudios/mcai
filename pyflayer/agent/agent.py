@@ -904,7 +904,7 @@ class Agent:
                 if notes:   # what the watcher AI saw since the last decision
                     messages.append({"role": "user", "content": "Teammates report:\n" + "\n".join(notes[-8:])})
                 try:
-                    reply = self.llm.chat(self._trim(messages), schemas)
+                    reply = self.llm.chat(self._trim(messages), schemas, model_role="logic")
                 except LLMNotConfigured:
                     raise
                 except Exception as e:  # noqa: BLE001
@@ -997,7 +997,7 @@ class Agent:
                   "exact numbers/blocks/coordinates if useful). Reply ONLY with JSON: "
                   "{\"lessons\": [{\"topic\": \"...\", \"text\": \"...\"}]}")
         try:
-            r = self.llm.chat([{"role": "user", "content": prompt}], None, temperature=0.2, max_tokens=400)
+            r = self.llm.chat([{"role": "user", "content": prompt}], None, temperature=0.2, max_tokens=400, model_role="logic")
             m = re.search(r"\{.*\}", r.content or "", re.S)
             data = json.loads(m.group(0)) if m else {}
             for lesson in data.get("lessons", [])[:3]:

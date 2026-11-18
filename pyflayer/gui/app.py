@@ -483,6 +483,10 @@ def card_bg(frame) -> str:
 class SettingsDialog:
     FIELDS = [("llm.api_key", "AI API key"), ("llm.model", "AI model (blank = provider default)"),
               ("llm.base_url", "Base URL (only for custom / local AI)"),
+              ("llm.models.chat", "Groq fast chat / routing model"),
+              ("llm.models.world", "Groq world / inventory model"),
+              ("llm.models.logic", "Groq precise logic / tools model"),
+              ("llm.models.fallback", "Groq logic fallback model"),
               ("server.port", "Server port"),
               ("server.auto_port_fallback", "Automatically use another port if busy (true / false)"),
               ("server.difficulty", "Difficulty (easy / normal / hard)"),

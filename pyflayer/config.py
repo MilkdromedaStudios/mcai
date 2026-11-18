@@ -48,7 +48,13 @@ DEFAULTS: dict = {
                                      # mistral | together | xai | ollama | lmstudio
         "base_url": "",             # only needed for "custom" (or to override a preset), e.g. http://pc:8000/v1
         "api_key": "",              # or set the provider's env var (OPENAI_API_KEY, OPENROUTER_API_KEY, ...)
-        "model": "",                # blank = the provider preset's default model
+        "model": "",
+        "models": {
+            "chat": "llama-3.1-8b-instant",
+            "world": "meta-llama/llama-4-scout-17b-16e-instruct",
+            "logic": "openai/gpt-oss-120b",
+            "fallback": "qwen/qwen3.8-27b",
+        },
         "tool_mode": "auto",         # auto | native | json
         "temperature": 0.3,
         "max_tokens": 400,           # short answers = fast decisions

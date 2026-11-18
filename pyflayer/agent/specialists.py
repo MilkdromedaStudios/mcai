@@ -67,11 +67,12 @@ class SpecialistTeam:
         if not self._slots.acquire(timeout=15):
             return ""
         try:
+            model_role = "chat" if role in ("interpreter", "chatter") else "world"
             response = self.agent.llm.chat([
                 {"role": "system", "content": "You are the Minecraft bot's " + role +
                  " specialist. Cooperate with other roles and never pretend you executed actions."},
                 {"role": "user", "content": prompt},
-            ], None, temperature=0.2, max_tokens=max_tokens)
+            ], None, temperature=0.2, max_tokens=max_tokens, model_role=model_role)
             return (response.content or "").strip()
         finally:
             self._slots.release()
@@ -205,6 +206,7 @@ class SpecialistTeam:
             a, b = self.agent, self.agent.bot
             if not b.spawned.is_set() or b.dead:
                 continue
+            observations = []
             for ore in ores:
                 if self.stop_event.is_set():
                     break
@@ -217,9 +219,19 @@ class SpecialistTeam:
                     if key in self._last_ores and time.time() - self._last_ores[key] < 180:
                         continue
                     self._last_ores[key] = time.time()
-                    a.board.post("scout", ore + " spotted at " + str(pos))
+                    observations.append(ore + " at " + str(pos))
                 except Exception as exc:
                     a.log.debug("scout %s: %s", ore, exc)
+            if observations:
+                inventory = b.inventory.summary()[:500]
+                summary = self._think(
+                    "scout", "Nearby ore observations: " + "; ".join(observations[:12]) +
+                    "\nInventory: " + inventory +
+                    "\nStatus: " + a.status_text(short=True) +
+                    "\nSummarize the useful world-state and inventory implications in 1-2 concise sentences. " +
+                    "Do not claim the bot collected anything.", 110
+                )
+                a.board.post("scout", summary[:220] if summary else "; ".join(observations[:8]))
             if len(self._last_ores) > 200:
                 cutoff = time.time() - 200
                 self._last_ores = {k: v for k, v in self._last_ores.items() if v > cutoff}
