@@ -51,19 +51,44 @@ In the app, type in the **message box** and press **Send**; the conversation
 pane displays your message, the bot's reply, and players' in-game chat. The
 activity log below remains available for tool details and errors.
 
-### Where model files actually go
+### Universal Minecraft skill model — any seed, new worlds
 
-For a source checkout at `~/mcai` (or wherever you cloned it):
+**Training now maintains two separate model snapshots** in addition to the
+live SQLite brain, so you don't lose progress if you stop an overnight run:
 
-- **Persistent learned brain:** `~/mcai/data/brain/PyBot.db` (one SQLite file per bot name).
-- **Training export:** `~/mcai/data/brain/PyBot-export.json.gz`.
-- **Imported memory backup:** choose a `.json.gz` file via **Import brain backup**;
-  its data is imported into the selected bot's `.db` file.
-- **Local LLM weights:** managed by **Ollama, LM Studio, or your chosen model
-  server**, *not* placed inside the PyFlayer brain folder. For Ollama configure
-  the `ollama` provider in Settings and select a model available to Ollama.
+- **World-independent reusable model:**
+  `~/mcai/data/brain/PyBot-universal-model.json.gz`
+- **Complete backup of this bot/world:**
+  `~/mcai/data/brain/PyBot-export.json.gz`
+- **Live brain database:** `~/mcai/data/brain/PyBot.db`
 
-The app displays your actual per-bot brain and backup paths beneath the conversation.
+The **Train overnight** button creates both snapshots immediately, refreshes
+them every three minutes while training (including long tasks), and saves
+them at the end, on error, or when stopped. **Train one skill** and app
+shutdown also save both. The snapshots are written atomically to avoid
+replacing a good model with an incomplete file.
+
+A **universal model** includes reusable parameterised action programs, game
+knowledge, learned block timings, and skill success history. It deliberately
+**excludes** old-seed waypoints, coordinates, episodes, base locations,
+completed missions and per-world achievements. This lets the bot start on an
+oak forest seed and use oak rather than trying to revisit a birch-tree
+coordinate from another seed.
+
+For a second seed or world, create/select a **fresh bot profile** (new local
+brain), then click **Import model** and choose the universal
+`.json.gz` file from the original bot. The imported scores are historical
+experience, *not* automatic certification: risky manoeuvres must be verified
+again in the new world. Click **Export universal model** to save a new copy.
+
+The bot replans against currently loaded terrain, items, inventory and nearby
+hazards. It can reuse techniques across different vanilla seeds and worlds on
+supported Minecraft versions, but **no bot can guarantee every skill works in
+every seed** (e.g. missing trees, unfamiliar modded blocks, unreachable
+structures). There is no LLM fine-tuning here: these are transferable
+**skills + memory + verification metrics**, not new neural-network weights
+(`.gguf` / `.safetensors`). Ollama / LM Studio manage the external
+language model separately.
 
 ### If the Minecraft server exits during startup
 
