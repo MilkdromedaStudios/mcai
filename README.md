@@ -198,6 +198,17 @@ On small screens (like the 7" Raspberry Pi touchscreen) the app switches to a co
 
 **AI providers:** `pyflayer ai providers` lists presets (OpenAI/ChatGPT, OpenRouter, Anthropic, Gemini, Groq, DeepSeek, Mistral, Together, xAI, Ollama, LM Studio, or any custom OpenAI-compatible URL). Connect with `pyflayer ai use openrouter --key sk-or-...` (optionally `--model ...`), or choose one under Settings, where *Test AI connection* checks it.
 
+### Groq multi-model routing
+
+Choose **Groq** in Settings and enter your Groq API key. McAI routes requests by role:
+
+- Chat, interpreter and quick routing: `llama-3.1-8b-instant`
+- Planner/builder world and inventory interpretation: `meta-llama/llama-4-scout-17b-16e-instruct`
+- Main tool-using agent and task reflection: `openai/gpt-oss-120b`
+- Logic-model rate-limit fallback: `qwen/qwen3.8-27b`
+
+If GPT-OSS returns HTTP 429, McAI switches logic requests to the Qwen fallback until the next UTC midnight. The four model IDs are configurable in Settings and in `config.json` under `llm.models`. Other providers continue using the single configured model.
+
 **Play with it yourself:** click **Server**, then join with Minecraft Java 26.3 using an address from the **Join:**
 line (the **public address** for other devices anywhere, your network address on the same Wi-Fi, or `localhost`). For the public address, forward TCP 25565 on your router to the Pi, or set `server.upnp=true` to have PyFlayer ask the router automatically. The server is offline mode, so any username works. Server commands (e.g. `op YourName`) can be typed in
 `pyflayer server`. The server prints the same join info.
