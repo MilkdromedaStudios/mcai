@@ -453,6 +453,10 @@ class ActionsMixin:
             self._wait(1)
         raise ActionError(f"container at {pos} did not open")
 
+    def send_use_item_now(self, yaw: float, pitch: float):
+        """Right-click with the held item immediately (safe to call from the tick loop)."""
+        self.send("use_item", Writer().varint(0).varint(self._next_seq()).float(yaw).float(pitch))
+
     def use_item(self, hold_ticks: int = 0):
         self.send("use_item", Writer().varint(0).varint(self._next_seq()).float(self.state.yaw)
                   .float(self.state.pitch))
@@ -533,6 +537,17 @@ class ActionsMixin:
             target = self.entities.nearest(self.position, lambda e: e.hostile, 24)
             if target is None:
                 return "no hostile mobs nearby"
+        # a player trick: pour lava under the mob from a safe distance (then take the lava back)
+        if self.inventory.count("lava_bucket") and self.dimension != "the_nether" and target.type != "player" \
+                and 2.5 < self.entity_distance(target) < 4.5:
+            from .liquids import FIRE_IMMUNE, burn_enemy
+            if target.type not in FIRE_IMMUNE:
+                try:
+                    res = burn_enemy(self, target)
+                    if target.id not in self.entities.by_id:
+                        return f"{target.type}: {res}"
+                except ActionError:
+                    pass
         res = self.combat.fight_until(target, None, timeout)
         return f"{target.name or target.type}: {res}"
 

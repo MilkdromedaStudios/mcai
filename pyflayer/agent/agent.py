@@ -801,6 +801,10 @@ class Agent:
             b.controls.jump = True
         elif idle and b.controls.jump and not b.state.in_water:
             b.controls.jump = False
+        # keep a water bucket in the hotbar so the fall clutch works instantly
+        if idle and b.inventory.count("water_bucket"):
+            from ..bot.liquids import keep_in_hotbar
+            keep_in_hotbar(b, "water_bucket", 8)
         # idle housekeeping: wear better armor, periodic scan into memory
         if idle and time.time() - self._last_scan > 90:
             res = self.scanner.scan(100)

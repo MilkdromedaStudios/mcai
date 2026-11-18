@@ -147,6 +147,8 @@ class Bot(ActionsMixin):
         self._init_actions()
         from .combat import Combat
         self.combat = Combat(self)   # 20 TPS reflex fighting
+        from .liquids import Clutch
+        self.clutch = Clutch(self)   # water-bucket clutch when falling
 
     # ================================================================== connection
     def connect(self, timeout: float = 30):

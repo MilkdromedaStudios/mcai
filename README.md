@@ -332,6 +332,16 @@ print(bot.inventory.summary(), bot.world.biome_at(*bot.block_pos))
 
 Environment overrides: `PYFLAYER_LLM_BASE_URL`, `PYFLAYER_LLM_API_KEY` (or `OPENAI_API_KEY`), `PYFLAYER_LLM_MODEL`, `PYFLAYER_HOME`.
 
+## Buckets (water and lava)
+
+- **Water clutch:** when falling far with a water bucket in the hotbar, the bot aims down, pours water just
+  before landing (no fall damage) and scoops it back up. It keeps a water bucket in hotbar slot 9 for this.
+- **Burning enemies:** in a fight with a lava bucket, it pours lava under the mob from a safe distance, backs
+  off, then takes the lava back. It skips fire-immune mobs (blazes, piglins, ...).
+- **Obsidian for the nether portal:** with no obsidian nearby but a lava pool, it pours water over the lava,
+  scoops the water back and mines the obsidian with a diamond pickaxe. The goal planner does this on its own.
+- **Filling buckets:** "get me a water bucket" or "lava bucket" works too.
+
 ## Tests
 
 ```bash

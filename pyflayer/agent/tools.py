@@ -267,6 +267,37 @@ class ToolBox:
         def smelt(item, count=1):
             return self.bot.smelt(norm(item), max(1, int(count)))
 
+        @add("fill_bucket", "Fill an empty bucket with water or lava from the nearest source block.",
+             {"fluid": S("water or lava")}, ("fluid",), long_running=True)
+        def fill_bucket(fluid):
+            from ..bot.liquids import fill_bucket as fb
+            return fb(self.bot, "lava" if "lava" in str(fluid).lower() else "water")
+
+        @add("pour_bucket", "Pour a water or lava bucket on top of the block at x,y,z (put out fire, make a "
+             "waterfall, block a path, make obsidian...).", {"fluid": S("water or lava"), "x": I("x"), "y": I("y"),
+                                                             "z": I("z")}, ("fluid", "x", "y", "z"))
+        def pour_bucket(fluid, x, y, z):
+            from ..bot.liquids import pour
+            return f"poured {fluid} at {pour(self.bot, 'lava' if 'lava' in str(fluid).lower() else 'water', (int(x), int(y), int(z)))}"
+
+        @add("burn_with_lava", "Pour lava under a mob (by type or entity id) from a safe distance, then take the "
+             "lava back. Not for fire-immune mobs.", {"target": S("mob type or entity id")}, ("target",),
+             long_running=True)
+        def burn_with_lava(target):
+            from ..bot.liquids import burn_enemy
+            t = str(target).lower()
+            e = self.bot.entities.get(int(t)) if t.isdigit() else self.bot.entities.nearest(
+                self.bot.position, lambda x: x.type == norm(t), 16)
+            if not e:
+                return f"ERROR: no {target} nearby"
+            return burn_enemy(self.bot, e)
+
+        @add("make_obsidian", "Make obsidian by pouring water over a lava pool and mine it (needs a diamond "
+             "pickaxe and a water bucket).", {"count": I("how many (default 10)")}, long_running=True)
+        def make_obsidian(count=10):
+            from ..bot.liquids import cast_obsidian
+            return cast_obsidian(self.bot, int(count))
+
         @add("achieve_goal", "Work through the whole beat-the-game plan up to a big goal, step by step: one of "
              "iron_armor, diamonds, nether_portal, enter_nether, blaze_rods, ender_pearls, eyes_of_ender, stronghold, "
              "end_portal, enter_end, kill_dragon (= beat the game). Runs in the background.",
