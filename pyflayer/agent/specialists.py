@@ -67,11 +67,12 @@ class SpecialistTeam:
         if not self._slots.acquire(timeout=15):
             return ""
         try:
+            model_role = "chat" if role in ("interpreter", "chatter") else "world"
             response = self.agent.llm.chat([
                 {"role": "system", "content": "You are the Minecraft bot's " + role +
                  " specialist. Cooperate with other roles and never pretend you executed actions."},
                 {"role": "user", "content": prompt},
-            ], None, temperature=0.2, max_tokens=max_tokens)
+            ], None, temperature=0.2, max_tokens=max_tokens, model_role=model_role)
             return (response.content or "").strip()
         finally:
             self._slots.release()
