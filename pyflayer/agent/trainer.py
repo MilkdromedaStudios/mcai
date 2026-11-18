@@ -389,7 +389,8 @@ class Trainer:
                     self._attempt(ms, fails)
                     # One measured dry-ground skill drill after every two
                     # curriculum attempts. World actions use the same lock.
-                    if self.running and self.completed_attempts and self.completed_attempts % 2 == 0:
+                    if (self.running and self.completed_attempts and self.completed_attempts % 2 == 0
+                            and getattr(self.agent, 'skill_coach', None)):
                         self.status = "skill practice"
                         result = self.agent.skill_coach.practice_one()
                         self.note(result)
@@ -549,7 +550,7 @@ class Trainer:
             "status": self.status,
             "current": self.current,
             "last_error": self.last_error,
-            "skills": self.agent.skill_coach.mastery(),
+            "skills": self.agent.skill_coach.mastery() if getattr(self.agent, "skill_coach", None) else {},
             "completed_attempts": self.completed_attempts,
             "successful_attempts": self.successful_attempts,
             "recent_events": self.events[-20:],
