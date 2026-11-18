@@ -138,7 +138,8 @@ class App:
         bar.pack(fill="x")
         buttons = [("Start bot", self.do_start, "Accent.TButton"), ("Stop", self.do_stop, "TButton"),
                    ("Server", self.do_server, "TButton"), ("Join server", self.do_join, "TButton"),
-                   ("Import brain backup", self.do_model, "TButton"), ("Train overnight", self.do_train, "TButton"),
+                   ("Import model", self.do_model, "TButton"), ("Export universal model", self.do_export_model, "TButton"),
+                   ("Train overnight", self.do_train, "TButton"),
                    ("Train one skill", self.do_train_skill, "TButton"),
                    ("Settings", self.do_settings, "TButton")]
         per_row = 4 if self.compact else 7
@@ -336,8 +337,9 @@ class App:
         self._bg("Join server", lambda: self.rt.start_agent(self.rt.current))
 
     def do_model(self):
-        path = filedialog.askopenfilename(title="Import a PyFlayer brain backup (.json.gz)", parent=self.root,
-                                          filetypes=[("PyFlayer model", "*.json.gz *.gz"), ("All files", "*")])
+        path = filedialog.askopenfilename(
+            title="Import universal model (any world) or full brain backup (same world)",
+            parent=self.root, filetypes=[("PyFlayer model", "*.json.gz *.gz"), ("All files", "*")])
         if not path:
             return
 
@@ -347,9 +349,22 @@ class App:
             self.rt.session().bot and self.rt.session().bot.learned_hardness.update(brain.learned_hardness())
             self.rt.start_agent(self.rt.current)
             self.root.after(0, lambda: messagebox.showinfo(
-                "Brain backup imported", f"Imported memory and skills from:\n{path}\n\n"
+                "Model imported", f"Imported compatible skills and knowledge from:\n{path}\n\n"
+                "A universal model does not import the old world's coordinates or completed quests.\n"
                 f"Saved into: {DATA_DIR / 'brain' / (self.rt.current + '.db')}"))
-        self._bg("Run from model file", go)
+        self._bg("Import model", go)
+
+    def do_export_model(self):
+        def go():
+            brain = self.rt.open_brain(self.rt.current)
+            output = brain.export_universal()
+            full = brain.export_latest()
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Universal model exported",
+                f"Reusable on other seeds and worlds:\n{output}\n\n"
+                f"Complete backup for this world:\n{full}\n\n"
+                "Use Import model on a new bot profile to reuse the learned skills."))
+        self._bg("Export universal model", go)
 
     def do_train(self):
         hours = self.cfg["training"]["hours"]
@@ -365,7 +380,10 @@ class App:
             agent = self.rt.start_agent(self.rt.current)
             with agent._actuation_lock:
                 result = agent.skill_coach.practice_one()
-            self.root.after(0, lambda: messagebox.showinfo("Skill practice", result))
+                universal = agent.brain.export_universal()
+                agent.brain.export_latest()
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Skill practice", result + f"\n\nUniversal model saved: {universal}"))
         self._bg("Train one skill", go)
 
     def do_settings(self):
@@ -459,8 +477,10 @@ class App:
                 self.chat.see("end")
                 self.chat.configure(state="disabled")
                 self._chat_seen = len(messages)
-        self.model_info.set("Brain file: " + str(DATA_DIR / "brain" / (rt.current + ".db")) +
-                            "  |  Training backup: " +
+        self.model_info.set("Live brain: " + str(DATA_DIR / "brain" / (rt.current + ".db")) +
+                            "  |  Universal model: " +
+                            str(DATA_DIR / "brain" / (rt.current + "-universal-model.json.gz")) +
+                            "  |  Full world backup: " +
                             str(DATA_DIR / "brain" / (rt.current + "-export.json.gz")))
         srv = rt.server
         if srv and srv.running:
