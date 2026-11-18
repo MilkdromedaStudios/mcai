@@ -73,6 +73,21 @@ Available tools (name: description | JSON-schema of args):
 """
 
 
+# free-tier-friendly backups per provider (only used if the primary model fails; filtered by what the key can
+# actually use, via the provider's /models list)
+BACKUP_MODELS = {
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b", "openai/gpt-oss-120b",
+             "qwen/qwen3-32b", "gemma2-9b-it"],
+    "openrouter": ["meta-llama/llama-3.3-70b-instruct:free", "deepseek/deepseek-chat-v3-0324:free",
+                   "google/gemini-2.0-flash-exp:free", "mistralai/mistral-small-3.1-24b-instruct:free"],
+    "gemini": ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"],
+    "openai": ["gpt-4.1-mini", "gpt-4o-mini", "gpt-4.1-nano"],
+    "mistral": ["mistral-small-latest", "open-mistral-nemo"],
+    "deepseek": ["deepseek-chat"],
+    "together": ["meta-llama/Llama-3.3-70B-Instruct-Turbo-Free"],
+}
+
+
 class LLM:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -82,7 +97,16 @@ class LLM:
         self.tokens = 0
         self.last_error = ""
         self._logic_fallback_until = 0.0
+        self._reset_backups()
         self._maybe_client()
+
+    def _reset_backups(self):
+        self._dead: set[str] = set()          # models this key can't use (404/403)
+        self._cool: dict[str, float] = {}     # rate-limited models -> usable again at
+        self._available: set[str] | None = None
+        self._available_at = 0.0
+        self.active_backup: dict[str, str] = {}
+        self.last_model = ""
 
     def _maybe_client(self):
         r = resolve(self.cfg)
@@ -98,7 +122,7 @@ class LLM:
         r = resolve(self.cfg)
         self.model = r["model"] or "gpt-4.1-mini"
         kw = {"api_key": r["api_key"] or "not-needed", "timeout": float(self.cfg.get("timeout", 120)),
-              "max_retries": 2, "base_url": r["base_url"]}
+              "max_retries": 1, "base_url": r["base_url"]}   # switch to a backup model fast
         if r["headers"]:
             kw["default_headers"] = r["headers"]
         self.client = OpenAI(**kw)
@@ -108,6 +132,7 @@ class LLM:
         self.mode = cfg.get("tool_mode", "auto")
         self.client = None
         self._logic_fallback_until = 0.0
+        self._reset_backups()
         self._maybe_client()
 
     def test(self) -> str:
@@ -117,7 +142,9 @@ class LLM:
         try:
             t = time.time()
             r = self.chat([{"role": "user", "content": "Reply with the single word: ready"}], None, 0.0, 10, model_role="chat")
-            return f"OK ({time.time() - t:.1f}s, model {self.model}): {r.content.strip()[:60]!r}"
+            used = self.last_model or self.model
+            backups = f"; backups in use: {self.active_backup}" if self.active_backup else ""
+            return f"OK ({time.time() - t:.1f}s, model {used}): {r.content.strip()[:60]!r}{backups}"
         except Exception as e:  # noqa: BLE001
             return f"FAILED ({self.model} @ {resolve(self.cfg)['base_url']}): {e}"
 
@@ -163,29 +190,88 @@ class LLM:
             return self._json_mode(messages, tools, temperature, max_tokens, model)
         return self._plain(messages, temperature, max_tokens, model)
 
+    # ------------------------------------------------------------------ model backups
+    def available_models(self) -> set[str] | None:
+        """Model ids this key may use (from the provider's /models list), cached for an hour. None = unknown."""
+        if self._available is not None and time.time() - self._available_at < 3600:
+            return self._available
+        try:
+            ids = {m.id for m in self.client.models.list()}
+            skip = ("whisper", "tts", "guard", "embed", "playai", "orpheus", "distil", "moderation", "image", "audio")
+            self._available = {i for i in ids if not any(k in i.lower() for k in skip)} or None
+        except Exception as e:  # noqa: BLE001
+            log.debug("could not list models: %s", e)
+            self._available = None
+        self._available_at = time.time()
+        return self._available
+
+    def _chain(self, first: str) -> list[str]:
+        """The model to try first, then backups: the user's list, the other configured models, the provider's
+        free-tier-friendly defaults, and finally anything the key is allowed to use."""
+        prov = (self.cfg.get("provider") or "custom").lower()
+        order = [first, *(self.cfg.get("backup_models") or []), *BACKUP_MODELS.get(prov, []),
+                 *(self.cfg.get("models") or {}).values(), self.model]     # strongest free backups first
+        now = time.time()
+        chain = []
+        for m in order:
+            if m and m not in chain and m not in self._dead and self._cool.get(m, 0) <= now:
+                chain.append(m)
+        avail = self.available_models()
+        if avail:
+            known = [m for m in chain if m in avail]
+            extra = sorted((m for m in avail if m not in known),
+                           key=lambda m: (0 if any(k in m for k in ("llama", "gpt-oss", "qwen", "gemma", "mistral",
+                                                                    "deepseek", "gpt-4", "claude", "gemini")) else 1, m))
+            chain = known + [m for m in extra if m not in self._dead and self._cool.get(m, 0) <= now][:6]
+        return chain or [first]
+
     def _create(self, model=None, **kw):
         t = time.time()
-        selected = model or self.model
-        try:
-            r = self.client.chat.completions.create(model=selected, **kw)
-        except Exception as exc:
-            status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-            logic_model = str((self.cfg.get("models") or {}).get("logic") or "openai/gpt-oss-120b")
-            if (self.cfg.get("provider") or "").lower() == "groq" and selected == logic_model and status == 429:
-                self._logic_fallback_until = self._next_utc_midnight()
-                fallback = str((self.cfg.get("models") or {}).get("fallback") or "qwen/qwen3.8-27b")
-                log.warning("Groq logic model rate-limited; switching to %s until UTC midnight", fallback)
-                r = self.client.chat.completions.create(model=fallback, **kw)
-            else:
+        first = model or self.model
+        last_exc = None
+        for selected in self._chain(first):
+            try:
+                r = self.client.chat.completions.create(model=selected, **kw)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+                text = str(exc).lower()
+                if status in (404, 403) or (status == 400 and any(k in text for k in (
+                        "model", "decommissioned", "does not exist", "not found", "no access"))):
+                    self._dead.add(selected)                         # not on this plan / removed: never retry
+                    log.warning("AI model %s is not available on this key (%s); using a backup model", selected,
+                                status)
+                    continue
+                if status == 429:
+                    daily = any(k in text for k in ("per day", "daily", "tokens per day", "requests per day", "tpd", "rpd"))
+                    wait = self._retry_after(exc)
+                    self._cool[selected] = self._next_utc_midnight() if daily else time.time() + (wait or 60)
+                    log.warning("AI model %s is rate-limited (%s); using a backup model", selected,
+                                "until tomorrow" if daily else f"for {int(wait or 60)}s")
+                    continue
                 self.last_error = str(exc)
                 raise
-        self.calls += 1
+            if selected != first:
+                self.active_backup[first] = selected
+            self.last_model = selected
+            self.calls += 1
+            try:
+                self.tokens += r.usage.total_tokens
+            except AttributeError:
+                pass
+            log.debug("llm call %s %.1fs", selected, time.time() - t)
+            return r
+        self.last_error = f"all models failed: {last_exc}"
+        raise RuntimeError(f"no AI model on this key worked (last error: {last_exc}). Check your plan/key, or set "
+                           f"llm.backup_models in config.json")
+
+    @staticmethod
+    def _retry_after(exc) -> float | None:
         try:
-            self.tokens += r.usage.total_tokens
-        except AttributeError:
-            pass
-        log.debug("llm call %.1fs", time.time() - t)
-        return r
+            v = getattr(getattr(exc, "response", None), "headers", {}).get("retry-after")
+            return float(v) if v else None
+        except (TypeError, ValueError):
+            return None
 
     def _plain(self, messages, temperature, max_tokens, model) -> LLMReply:
         r = self._create(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
