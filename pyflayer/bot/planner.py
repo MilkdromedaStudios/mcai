@@ -75,24 +75,41 @@ class Planner:
                 found.append((name, math.dist(pos, self.bot.position)))
         return sorted(found, key=lambda row: row[1])
 
+    ALL_LOGS = ("oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log", "dark_oak_log",
+                "mangrove_log", "cherry_log", "pale_oak_log")
+
     def gather_wood(self, count: int = 8, radius: float = 96) -> str:
-        """Harvest whichever available wood is closest; don't insist on birch/oak."""
+        """Harvest whichever wood is closest and reachable. Unreachable trees are skipped, and if none are left
+        the bot widens its search and walks somewhere new instead of giving up."""
         if count < 1:
             return "no wood requested"
-        names = [name for name, dist in self.nearby_wood(radius)]
-        if not names:
-            names = ["oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
-                     "dark_oak_log", "mangrove_log", "cherry_log", "pale_oak_log"]
-            self._say("no loaded trees nearby; scouting for any tree type")
-            if not self.explore_for(names, max_legs=3, leg=45):
-                raise ActionError("no reachable trees discovered in local chunks")
-            names = [name for name, _ in self.nearby_wood(radius)]
-        if not names:
-            raise ActionError("trees appeared during scouting but none are reachable now")
-        self._say("nearest available wood: " + ", ".join(names[:4]))
-        # Collect_block searches all these species; picks closest reachable
-        # block on every step, so moving to birch doesn't trump nearby oak.
-        return self.bot.collect_block(names, count, radius=radius, timeout=360)
+        logs = list(self.ALL_LOGS) + (["crimson_stem", "warped_stem"] if getattr(self.bot, "dimension", "") == "the_nether" else [])
+        logs = [n for n in logs if n in self.gd.block_states]
+        start = sum(self.bot.inventory.count(n) for n in logs)
+        got = lambda: sum(self.bot.inventory.count(n) for n in logs) - start   # noqa: E731
+        r = max(radius, 64)
+        for rnd in range(6):
+            if hasattr(self.bot, "_check"):
+                self.bot._check()
+            if got() >= count:
+                break
+            self._near_cache.clear()
+            if not self.bot.find_blocks(logs, r, 1):
+                self._say("no trees in reach; scouting for any tree type")
+                self.explore_for(logs, max_legs=4, leg=60)
+            try:
+                self.bot.collect_block(logs, count - got(), radius=r, timeout=240)
+            except ActionError as e:
+                if any(k in str(e) for k in ("stopped", "died", "disconnected")):
+                    raise
+                self._say(f"  wood: {e}; trying other trees")
+                if rnd >= 1:
+                    self.explore_for(logs, max_legs=2, leg=60)   # these trees are unreachable: move on
+                r = min(r + 48, 160)
+        n = got()
+        if n <= 0:
+            raise ActionError("no reachable trees found after scouting")
+        return f"gathered {n} logs"
 
     def required_tool(self, block: str) -> tuple[str | None, str | None]:
         """(tool kind, minimum tier) needed to harvest a block's drops."""
@@ -231,6 +248,10 @@ class Planner:
             raise ActionError(f"cannot plan {item}: recursion")
         stack = stack + (item,)
         attempts = 0
+        if item in self.ALL_LOGS and depth > 0 and self.have(item) < count:
+            # a recipe needs "some log": any reachable tree works, the caller re-picks the wood type it got
+            self._say(f"{'  ' * depth}obtain {count}x wood: nearest reachable trees")
+            return self.gather_wood(count - self.have(item))
         from . import liquids
         if item in ("water_bucket", "lava_bucket") and self.have(item) < count:
             while self.have(item) < count:
@@ -308,9 +329,19 @@ class Planner:
         if tool:
             self._say(f"{'  ' * depth}  need {tool} for {block}")
             self.obtain(tool, 1, depth + 1, deadline, stack)
+        if block in self.ALL_LOGS:
+            self.gather_wood(max(1, need))             # any reachable tree will do for the planner's next pass
+            return
         if not self._nearby_block(block, 128):
             self.explore_for([block])
-        self.bot.collect_block(block, max(1, need), radius=128, timeout=max(60, min(600, deadline - time.time())))
+        try:
+            self.bot.collect_block(block, max(1, need), radius=128, timeout=max(60, min(600, deadline - time.time())))
+        except ActionError as e:
+            if "could not find/reach" not in str(e):
+                raise
+            self._say(f"  {block} here is unreachable; looking somewhere else")
+            self.explore_for([block])
+            self.bot.collect_block(block, max(1, need), radius=128, timeout=max(60, min(600, deadline - time.time())))
 
     def _do_craft(self, r, item, need, depth, deadline, stack):
         crafts = math.ceil(need / r.count)

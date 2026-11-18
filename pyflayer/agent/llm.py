@@ -14,6 +14,10 @@ from dataclasses import dataclass, field
 log = logging.getLogger("pyflayer.llm")
 
 
+class _AllRateLimited(Exception):
+    """Every usable model answered 429."""
+
+
 @dataclass
 class ToolCall:
     id: str
@@ -97,6 +101,10 @@ class LLM:
         self.tokens = 0
         self.last_error = ""
         self._logic_fallback_until = 0.0
+        self.on_wait = None                    # callback(seconds) while waiting out a rate limit
+        self.waiting_until = 0.0
+        self.cancelled = False
+        self.wait_when_rate_limited = cfg.get("wait_when_rate_limited", True)
         self._reset_backups()
         self._maybe_client()
 
@@ -132,6 +140,10 @@ class LLM:
         self.mode = cfg.get("tool_mode", "auto")
         self.client = None
         self._logic_fallback_until = 0.0
+        self.on_wait = None                    # callback(seconds) while waiting out a rate limit
+        self.waiting_until = 0.0
+        self.cancelled = False
+        self.wait_when_rate_limited = cfg.get("wait_when_rate_limited", True)
         self._reset_backups()
         self._maybe_client()
 
@@ -226,10 +238,41 @@ class LLM:
         return chain or [first]
 
     def _create(self, model=None, **kw):
-        t = time.time()
+        """Call the first working model; if every model is rate-limited, wait (like a player would) and retry."""
         first = model or self.model
+        while True:
+            try:
+                return self._create_once(first, **kw)
+            except _AllRateLimited:
+                if not getattr(self, "wait_when_rate_limited", True) or getattr(self, "cancelled", False):
+                    raise RuntimeError("all AI models are rate-limited right now") from None
+                now = time.time()
+                soonest = min((v for v in self._cool.values() if v > now), default=now + 30)
+                wait = max(5.0, min(soonest - now, 300.0))
+                self.waiting_until = now + wait
+                log.warning("AI rate-limited on every model; waiting %ds before trying again", int(wait))
+                if self.on_wait:
+                    try:
+                        self.on_wait(int(wait))
+                    except Exception:  # noqa: BLE001
+                        pass
+                end = now + wait
+                while time.time() < end and not getattr(self, "cancelled", False):
+                    time.sleep(1)
+                self.waiting_until = 0
+                # short limits are over; daily limits get another chance (some providers reset early)
+                for m, v in list(self._cool.items()):
+                    if v <= time.time() + 1 or wait >= 300:
+                        self._cool.pop(m, None)
+
+    def _create_once(self, first, **kw):
+        t = time.time()
         last_exc = None
-        for selected in self._chain(first):
+        limited = False
+        chain = self._chain(first)
+        if not chain and self._cool:
+            raise _AllRateLimited()
+        for selected in chain:
             try:
                 r = self.client.chat.completions.create(model=selected, **kw)
             except Exception as exc:  # noqa: BLE001
@@ -248,6 +291,7 @@ class LLM:
                     self._cool[selected] = self._next_utc_midnight() if daily else time.time() + (wait or 60)
                     log.warning("AI model %s is rate-limited (%s); using a backup model", selected,
                                 "until tomorrow" if daily else f"for {int(wait or 60)}s")
+                    limited = True
                     continue
                 self.last_error = str(exc)
                 raise
@@ -261,6 +305,8 @@ class LLM:
                 pass
             log.debug("llm call %s %.1fs", selected, time.time() - t)
             return r
+        if limited or (not chain and self._cool):
+            raise _AllRateLimited()
         self.last_error = f"all models failed: {last_exc}"
         raise RuntimeError(f"no AI model on this key worked (last error: {last_exc}). Check your plan/key, or set "
                            f"llm.backup_models in config.json")

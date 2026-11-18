@@ -62,15 +62,20 @@ class SkillCoach:
         return all(self._dry_pad(x + dx * i, y, z + dz * i) for i in range(length + 1))
 
     def _resource_choice(self) -> tuple[bool, str] | None:
-        kinds = self.bot.planner.nearby_wood(radius=48)
+        kinds = self.bot.planner.nearby_wood(radius=96)
         if not kinds:
             return None
         if not self.bot.inventory.empty_slots():
             return None
         wanted = kinds[0][0]
-        names = [name for name, dist in kinds]
+        names = list(self.bot.planner.ALL_LOGS)
         before = sum(self.bot.inventory.count(n) for n in names)
-        self.bot.planner.gather_wood(count=2, radius=48)
+        try:
+            self.bot.planner.gather_wood(count=2, radius=96)
+        except ActionError as e:
+            if any(k in str(e) for k in ("stopped", "died", "disconnected")):
+                raise
+            return None                      # no reachable tree here: not the bot's fault, skip this drill
         after = sum(self.bot.inventory.count(n) for n in names)
         return after > before, f"chose loaded {wanted} at {kinds[0][1]:.1f} blocks; gained {after - before}"
 
@@ -166,6 +171,9 @@ class SkillCoach:
             try:
                 result = getattr(self, "_" + skill)()
             except (ActionError, ValueError, RuntimeError) as exc:
+                if any(k in str(exc) for k in ("could not find", "no reachable", "not found", "unreachable")):
+                    self.agent._note(f"[skills] {skill}: skipped ({exc})")
+                    continue              # the area doesn't allow this drill; try another instead of failing
                 result = (False, str(exc))
             if result is None:
                 continue
