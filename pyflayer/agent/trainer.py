@@ -71,15 +71,9 @@ def _obtain_any(items, n):
 
 
 def _any_logs(n):
-    """Choose only loaded nearby tree species and verify actual inventory gains."""
+    """Chop whatever trees are closest and reachable (any wood type) instead of hunting for one kind."""
     def run(t):
-        before = sum(t.bot.inventory.count(i) for i in LOGS)
-        res = t.bot.planner.gather_wood(n, radius=96)
-        after = sum(t.bot.inventory.count(i) for i in LOGS)
-        if after <= before:
-            raise ActionError(f"no wood gathered: {res}")
-        t.note(f"wood selection: {res}; +{after - before} any logs")
-        return res
+        return t.bot.planner.gather_wood(n - sum(t.bot.inventory.count(i) for i in LOGS) or n)
     return run
 
 

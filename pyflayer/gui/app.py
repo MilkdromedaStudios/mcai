@@ -376,15 +376,48 @@ class App:
         self._bg("Train overnight", lambda: self.rt.start_training(hours, True, self.rt.current))
 
     def do_train_skill(self):
-        def go():
-            agent = self.rt.start_agent(self.rt.current)
-            with agent._actuation_lock:
-                result = agent.skill_coach.practice_one()
-                universal = agent.brain.export_universal()
-                agent.brain.export_latest()
-            self.root.after(0, lambda: messagebox.showinfo(
-                "Skill practice", result + f"\n\nUniversal model saved: {universal}"))
-        self._bg("Train one skill", go)
+        """Pick what to train: one skill drill, or train until a goal is reached."""
+        from ..agent.skill_training import DRILL_LABELS
+        win = tk.Toplevel(self.root)
+        win.title("Train")
+        win.transient(self.root)
+        win.configure(bg=BG)
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text=f"What should {self.rt.current} train?").pack(anchor="w", pady=(0, 8))
+
+        def drill(name):
+            win.destroy()
+
+            def go():
+                agent = self.rt.start_agent(self.rt.current)
+                with agent._actuation_lock:
+                    result = agent.skill_coach.practice_one(name)
+                    universal = agent.brain.export_universal()
+                    agent.brain.export_latest()
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Skill practice", result + f"\n\nUniversal model saved: {universal}"))
+            self._bg("Train " + DRILL_LABELS.get(name, name or "skill"), go)
+
+        def goal():
+            text = simpledialog.askstring(
+                "Train to goal", "Goal to train towards (e.g. 'get to the end', 'iron armor', 'blaze rods',\n"
+                "'beat the dragon', or anything in plain English):", parent=win)
+            if not text:
+                return
+            win.destroy()
+
+            def go():
+                agent = self.rt.start_agent(self.rt.current)
+                agent.instruct(text, "app")
+            self._bg("Train to goal", go)
+
+        ttk.Button(frm, text="Least-practised skill (auto)", command=lambda: drill(None)).pack(fill="x", pady=2)
+        for name, label in DRILL_LABELS.items():
+            ttk.Button(frm, text=label, command=lambda n=name: drill(n)).pack(fill="x", pady=2)
+        ttk.Separator(frm).pack(fill="x", pady=6)
+        ttk.Button(frm, text="Train to goal...", command=goal).pack(fill="x", pady=2)
+        ttk.Button(frm, text="Cancel", command=win.destroy).pack(fill="x", pady=(8, 0))
 
     def do_settings(self):
         SettingsDialog(self)

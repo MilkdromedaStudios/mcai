@@ -30,19 +30,47 @@ class FakeEvents:
 class TestNearbyWood(unittest.TestCase):
     def test_oak_nearby_does_not_seek_unavailable_birch(self):
         hits = []
+        inv = {}
+
+        def find(names, radius, count):
+            names = [names] if isinstance(names, str) else names
+            return [(3, 64, 0)] if "oak_log" in names else []
+
+        def collect(names, count, radius, timeout):
+            hits.append((sorted(names), count))
+            inv["oak_log"] = inv.get("oak_log", 0) + count     # the nearest reachable tree is oak
+            return "chopped"
+
         bot = SimpleNamespace(
             position=(0, 64, 0),
             gd=SimpleNamespace(block_states={"oak_log": [], "birch_log": []}),
-            find_blocks=lambda name, radius, count: (
-                [(3, 64, 0)] if name == "oak_log" else []),
-            inventory=SimpleNamespace(count=lambda n: 0),
-            collect_block=lambda names, count, radius, timeout: (
-                hits.append((names, count)), "chopped")[1],
-            events=FakeEvents())
+            find_blocks=find, inventory=SimpleNamespace(count=lambda n: inv.get(n, 0)),
+            collect_block=collect, events=FakeEvents())
         planner = Planner(bot)
         self.assertEqual(planner.nearby_wood(), [("oak_log", 3.0)])
-        self.assertEqual(planner.gather_wood(5), "chopped")
-        self.assertEqual(hits, [(["oak_log"], 5)])
+        self.assertEqual(planner.gather_wood(5), "gathered 5 logs")
+        self.assertEqual(hits, [(["birch_log", "oak_log"], 5)])   # any wood, one trip, no birch hunt
+
+    def test_unreachable_trees_do_not_stop_gathering(self):
+        inv = {}
+        tries = []
+
+        def collect(names, count, radius, timeout):
+            tries.append(radius)
+            if len(tries) == 1:
+                from pyflayer.bot.actions import ActionError
+                raise ActionError("could not find/reach any birch_log within 48 blocks")
+            inv["oak_log"] = count
+            return "chopped"
+
+        bot = SimpleNamespace(
+            position=(0, 64, 0), gd=SimpleNamespace(block_states={"oak_log": [], "birch_log": []}),
+            find_blocks=lambda names, radius, count: [(3, 64, 0)],
+            inventory=SimpleNamespace(count=lambda n: inv.get(n, 0)), collect_block=collect, events=FakeEvents())
+        planner = Planner(bot)
+        planner.explore_for = lambda *a, **k: True
+        self.assertEqual(planner.gather_wood(2, radius=48), "gathered 2 logs")
+        self.assertGreater(tries[1], tries[0])                     # widened the search after the failure
 
     def test_tree_cache_updates_when_player_enters_new_chunk(self):
         pos = [0, 64, 0]
@@ -142,3 +170,32 @@ class TestLavaHazards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChatDrill(unittest.TestCase):
+    def test_talks_to_teammate_and_hears_answer(self):
+        import time as _t
+        log = []
+
+        class B:
+            username, dimension, block_pos = "PyBot", "overworld", (1, 64, 2)
+            players = {"u1": "PyBot", "u2": "Helper"}
+            chat_log = log
+            events = FakeEvents()
+            inventory = SimpleNamespace(counts=lambda: {"oak_log": 3})
+
+            def chat(self, m):
+                log.append((_t.time(), "PyBot", m))
+                if m.startswith("Helper"):
+                    log.append((_t.time() + 0.01, "Helper", "I'm mining iron, you get wood"))
+
+            def _wait(self, n):
+                pass
+        brain = Mock()
+        agent = SimpleNamespace(bot=B(), brain=brain, current_task="wood", _note=lambda m: None,
+                                llm=SimpleNamespace(configured=False))
+        coach = SkillCoach.__new__(SkillCoach)
+        coach.agent, coach.bot, coach.brain = agent, agent.bot, brain
+        ok, detail = coach._chat_teamwork()
+        self.assertTrue(ok, detail)
+        self.assertIn("Helper", detail)

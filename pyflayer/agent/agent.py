@@ -240,6 +240,8 @@ class Agent:
         self.brain = brain
         self.wiki = wiki
         self.llm = llm or LLM(cfg["llm"])
+        self.llm.cancelled = False
+        self.llm.on_wait = lambda sec: self._note(f"[ai] rate limited on every model - waiting {sec}s, then continuing")
         self.server = server
         self.scanner = Scanner(bot)
         from .watcher import Blackboard, Watcher
@@ -295,6 +297,7 @@ class Agent:
 
     def stop(self):
         self.running = False
+        self.llm.cancelled = True
         self.specialists.stop()
         self.watcher.stop()
         self.bot.stop()

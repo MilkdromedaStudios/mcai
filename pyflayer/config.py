@@ -55,7 +55,8 @@ DEFAULTS: dict = {
             "logic": "openai/gpt-oss-120b",
             "fallback": "qwen/qwen3.8-27b",
         },
-        "backup_models": [],         # extra models to try if the main one fails (404 / no access / rate limit)
+        "backup_models": [],
+        "wait_when_rate_limited": True,  # every model rate-limited -> wait and retry instead of failing         # extra models to try if the main one fails (404 / no access / rate limit)
         "tool_mode": "auto",         # auto | native | json
         "temperature": 0.3,
         "max_tokens": 400,           # short answers = fast decisions
