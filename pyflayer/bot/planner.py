@@ -147,9 +147,28 @@ class Planner:
         return min(self.cost("coal", math.ceil(items / 8), depth + 1, stack),
                    self.cost("oak_planks", math.ceil(items / 1.5), depth + 1, stack) + 1)
 
+    def _wood_rank(self, item: str) -> float:
+        """For wood items (logs/planks/...): how close is a tree of that wood? Lower is better."""
+        for suf in ("_log", "_planks", "_wood", "_stem", "_hyphae"):
+            if item.endswith(suf):
+                wood = item[: -len(suf)]
+                break
+        else:
+            return 0.0
+        for log in (f"{wood}_log", f"{wood}_stem"):
+            if self.have(log):
+                return -1.0
+        for log in (f"{wood}_log", f"{wood}_stem"):
+            if log in self.gd.block_states:
+                p = self._nearby_block(log, 128)
+                if p:
+                    return math.dist(self.bot.position, p)
+        return 1e6                                     # no such trees around: don't go hunting for them
+
     def _rank_options(self, opts):
         counts = self.bot.inventory.counts()
-        return sorted(opts, key=lambda o: (-counts.get(o, 0), 0 if o.startswith(("oak", "cobblestone")) else 1))
+        return sorted(opts, key=lambda o: (-counts.get(o, 0), self._wood_rank(o),
+                                           0 if o.startswith(("oak", "cobblestone")) else 1))
 
     def _best_option(self, opts, n, depth=0, stack=()):
         counts = self.bot.inventory.counts()
@@ -157,6 +176,8 @@ class Planner:
             if counts.get(o, 0) >= n:
                 return o
         ranked = self._rank_options(opts)[:8]
+        if sum(1 for o in ranked if self._wood_rank(o) != 0.0) > 1:
+            return ranked[0]                           # any wood works: use the trees closest to us
         return min(ranked, key=lambda o: self.cost(o, n, depth + 1, stack))
 
     # ------------------------------------------------------------------ execution
