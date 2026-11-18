@@ -507,7 +507,7 @@ class ToolBox:
             out.append("advanced lava-gap jump: " +
                        ("unlocked" if a.skill_coach.lava_jump_ready()
                         else "LOCKED (needs certified dry jumps and placements, explicit opt-in)"))
-            return "\\n".join(out)
+            return "\n".join(out)
 
         # ------------------------------------------------------------ skills
         @add("list_skills", "List learned skills (reusable action programs), optionally matching a query.",
