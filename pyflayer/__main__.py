@@ -199,7 +199,7 @@ def cmd_update(rt, args):
     repo = rt.cfg.get("update.repo") or updater.DEFAULT_REPO
     info = updater.check(repo)
     print(info["message"])
-    if args.check or not info["available"] and not (updater.ROOT / ".git").exists():
+    if args.check or not info["available"]:
         return
     print(updater.update(repo))
 

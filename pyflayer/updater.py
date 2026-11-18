@@ -58,8 +58,36 @@ def latest_release(repo: str = DEFAULT_REPO) -> dict | None:
             "notes": (d.get("body") or "")[:2000]}
 
 
+def _git(*args, timeout: float = 120):
+    return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, timeout=timeout)
+
+
+def git_state() -> dict:
+    """Fetch origin/main and report how far behind this checkout is."""
+    fetch = _git("fetch", "--quiet", "--tags", "origin", "main", timeout=300)
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    behind = _git("rev-list", "--count", "HEAD..origin/main").stdout.strip() if fetch.returncode == 0 else "0"
+    dirty = bool(_git("status", "--porcelain", "--untracked-files=no").stdout.strip())
+    return {"fetched": fetch.returncode == 0, "error": fetch.stderr.strip()[-300:], "branch": branch,
+            "behind": int(behind or 0), "dirty": dirty}
+
+
 def check(repo: str = DEFAULT_REPO) -> dict:
     """{'current', 'latest', 'available': bool, 'message'}."""
+    if (ROOT / ".git").exists():
+        # source install: compare with the newest code on GitHub's main branch (works with or without releases)
+        st = git_state()
+        cur = current_version()
+        if not st["fetched"]:
+            return {"current": cur, "latest": None, "available": False,
+                    "message": f"couldn't reach GitHub to check for updates ({st['error'] or 'offline?'})"}
+        if st["branch"] != "main":
+            return {"current": cur, "latest": "main", "available": True,
+                    "message": f"you're on branch '{st['branch']}': update switches to the latest main"}
+        if st["behind"]:
+            return {"current": cur, "latest": "main", "available": True,
+                    "message": f"update available: {st['behind']} new change(s) on main"}
+        return {"current": cur, "latest": "main", "available": False, "message": f"up to date ({cur})"}
     cur = current_version()
     rel = latest_release(repo)
     if rel is None:
@@ -74,12 +102,28 @@ def check(repo: str = DEFAULT_REPO) -> dict:
 def update(repo: str = DEFAULT_REPO, progress=print) -> str:
     """Install the latest release in place. Returns a status message (restart the app afterwards)."""
     if (ROOT / ".git").exists():
-        progress("source checkout: running git pull")
-        out = subprocess.run(["git", "-C", str(ROOT), "pull", "--ff-only"], capture_output=True, text=True, timeout=300)
+        progress("downloading the latest code from GitHub ...")
+        st = git_state()
+        if not st["fetched"]:
+            raise RuntimeError(f"couldn't reach GitHub: {st['error'] or 'offline?'}")
+        if st["dirty"]:
+            # keep any edits the user made to app files, but out of the way of the update
+            _git("stash", "push", "-m", "pyflayer-update: local changes")
+            progress("your local file changes were saved with 'git stash'")
+        if st["branch"] != "main":
+            has_main = _git("rev-parse", "--verify", "--quiet", "main").returncode == 0
+            out = _git("checkout", "main") if has_main else _git("checkout", "-b", "main", "origin/main")
+            if out.returncode != 0:
+                raise RuntimeError("couldn't switch to main: " + (out.stderr or out.stdout)[-400:])
+        out = _git("merge", "--ff-only", "origin/main")
         if out.returncode != 0:
-            raise RuntimeError("git pull failed: " + (out.stderr or out.stdout)[-500:])
+            raise RuntimeError("your main branch has its own commits; update it yourself with 'git pull' "
+                               "(" + (out.stderr or out.stdout)[-300:] + ")")
+        for sh in ("install.sh", "run.sh"):
+            if (ROOT / sh).exists():
+                (ROOT / sh).chmod(0o755)
         _pip_install(progress)
-        return "updated with git pull - restart PyFlayer"
+        return f"updated to the latest main ({current_version()}) - restart PyFlayer"
     info = check(repo)
     if not info["available"]:
         return info["message"]
@@ -127,6 +171,12 @@ def update(repo: str = DEFAULT_REPO, progress=print) -> str:
                 (ROOT / sh).chmod(0o755)
     _pip_install(progress)
     return f"updated to {tag} (previous version saved in data/updates) - restart PyFlayer"
+
+
+def restart_app(args=("gui",)):
+    """Re-launch PyFlayer in place (after an update)."""
+    import os
+    os.execv(sys.executable, [sys.executable, "-m", "pyflayer", *args])
 
 
 def _pip_install(progress):

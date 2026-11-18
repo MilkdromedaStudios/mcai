@@ -549,19 +549,41 @@ class SettingsDialog:
         repo = self.app.cfg.get("update.repo") or updater.DEFAULT_REPO
         self.test_var.set("checking for updates...")
 
-        def run():
-            info = updater.check(repo)
+        ui = self.app.root.after          # Tk may only be touched from the main thread
+
+        def say(text):
+            ui(0, lambda: self.test_var.set(text))
+
+        def installed(msg, ok):
+            self.test_var.set(msg)
+            if ok and messagebox.askyesno("Update", f"{msg}\n\nRestart PyFlayer now?", parent=self.win):
+                self.app.rt.shutdown()
+                updater.restart_app()
+            elif not ok:
+                messagebox.showerror("Update", msg, parent=self.win)
+
+        def install():
+            try:
+                msg, ok = updater.update(repo, progress=say), True
+            except Exception as e:  # noqa: BLE001
+                msg, ok = f"update failed: {e}", False
+            ui(0, lambda: installed(msg, ok))
+
+        def ask(info):
             self.test_var.set(info["message"])
             if info["available"] and messagebox.askyesno(
                     "Update", f"{info['message']}\n\nInstall it now? Your world, bots' memory and settings are kept.",
                     parent=self.win):
-                try:
-                    msg = updater.update(repo, progress=self.test_var.set)
-                except Exception as e:  # noqa: BLE001
-                    msg = f"update failed: {e}"
-                self.test_var.set(msg)
-                messagebox.showinfo("Update", msg, parent=self.win)
-        threading.Thread(target=run, daemon=True).start()
+                self.test_var.set("updating...")
+                threading.Thread(target=install, daemon=True).start()
+
+        def check():
+            try:
+                info = updater.check(repo)
+            except Exception as e:  # noqa: BLE001
+                info = {"available": False, "message": f"update check failed: {e}"}
+            ui(0, lambda: ask(info))
+        threading.Thread(target=check, daemon=True).start()
 
     def test_ai(self):
         from ..agent.llm import LLM

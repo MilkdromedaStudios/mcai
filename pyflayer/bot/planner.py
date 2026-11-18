@@ -169,6 +169,26 @@ class Planner:
             raise ActionError(f"cannot plan {item}: recursion")
         stack = stack + (item,)
         attempts = 0
+        from . import liquids
+        if item in ("water_bucket", "lava_bucket") and self.have(item) < count:
+            while self.have(item) < count:
+                if not self.have("bucket"):
+                    self.obtain("bucket", 1, depth + 1, deadline, stack)
+                self._say(f"{'  ' * depth}fill a bucket with {item.split('_')[0]}")
+                liquids.fill_bucket(bot, item.split("_")[0])
+            return f"have {self.have(item)}x {item}"
+        if item == "obsidian" and self.have(item) < count and not self._nearby_block("obsidian", 128) \
+                and liquids.find_sources(bot, "lava", 96, 1) and bot.dimension != "the_nether":
+            # no obsidian around but there is lava: make it like a player (water over lava), then mine it
+            self._say(f"{'  ' * depth}obtain {count}x obsidian: pour water over lava, then mine it")
+            if not self.have("diamond_pickaxe") and not self.have("netherite_pickaxe"):
+                self.obtain("diamond_pickaxe", 1, depth + 1, deadline, stack)
+            if not self.have("water_bucket"):
+                self.obtain("water_bucket", 1, depth + 1, deadline, stack)
+            try:
+                liquids.cast_obsidian(bot, count - self.have(item))
+            except ActionError as e:
+                self._say(f"{'  ' * depth}  casting failed: {e}")
         while self.have(item) < count:
             bot._check()
             attempts += 1
