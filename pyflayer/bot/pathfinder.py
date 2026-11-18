@@ -210,6 +210,10 @@ class Pathfinder:
     def find(self, start, goal: Goal, max_nodes=30000, timeout=2.5, scaffold=None) -> PathResult:
         t0 = time.time()
         self._tool_cache: dict = {}
+        # Read the proficiency gate ONCE per path search; not once per node,
+        # because model/brain reads can otherwise overwhelm A* on a Pi.
+        gate = getattr(self.bot, "allow_lava_jumps", None)
+        self._gap_jumps_enabled = bool(callable(gate) and gate())
         if scaffold is None:
             scaffold = self.bot.inventory.count(set(self.scaffold_items)) if self.can_place else 0
         sx, sy, sz = start
@@ -279,6 +283,19 @@ class Pathfinder:
                 out.append(((x, y - 1, z), 1.5, Step(x, y - 1, z, "swim")))
         for dx, dz in CARDINALS:
             nx, nz = x + dx, z + dz
+            # Experimental one-block lava gap jump. Locked by default: allowed
+            # only after VERIFIED dry sprint jumps/placements and explicit opt-in.
+            # Landing must already be solid; no blind jumps into unknown terrain.
+            if (getattr(self, "_gap_jumps_enabled", False) and not in_water
+                    and self.standable(x, y - 1, z)
+                    and self.lava(nx, y - 1, nz)
+                    and self.passable(nx, y, nz)
+                    and self.passable(nx, y + 1, nz)
+                    and self.can_stand(nx + dx, y, nz + dz)
+                    and self.passable(nx + dx, y + 1, nz + dz)
+                    and not self.water(nx + dx, y, nz + dz)):
+                out.append(((nx + dx, y, nz + dz), 2.7,
+                            Step(nx + dx, y, nz + dz, "gap_jump")))
             # 1) walk
             if self.can_stand(nx, y, nz):
                 cost = 1.0 + (1.5 if self.water(nx, y, nz) else 0.0)

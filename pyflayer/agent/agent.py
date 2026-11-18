@@ -250,6 +250,11 @@ class Agent:
         self.board.on_post = lambda line: self._note(line)
         self.messages: list[tuple] = []  # (timestamp, sender, message) for in-app chat
         self._actuation_lock = threading.RLock()
+        from .skill_training import SkillCoach
+        self.skill_coach = SkillCoach(self)
+        # The pathfinder may consider an advanced hazard move only after actual
+        # dry-ground drill certification and explicit opt-in.
+        self.bot.allow_lava_jumps = self.skill_coach.lava_jump_ready
         self.tools = ToolBox(self)
         self.log = logging.getLogger("pyflayer.agent")
         self.tasks: queue.Queue = queue.Queue()
@@ -872,6 +877,12 @@ class Agent:
         done = [k for k, v in ms.items() if v["achieved"]]
         if done:
             sys += "\n# Milestones achieved in past sessions: " + ", ".join(done[:30])
+        sys += ("\n# Adaptive skills\nPrioritize nearby AVAILABLE materials. "
+                "If surrounded by oak, gather oak; never travel for birch unless birch is explicitly requested. "
+                "Use gather_nearest_wood for generic wood needs. "
+                "Use practice_skill for a supervised dry drill. Water-clutch reflex is observed during real "
+                "falls only; do not deliberately jump into lava or off cliffs to practice. "
+                "Dangerous lava-gap jumping is disabled unless certified and enabled in training settings.\n")
         return [{"role": "system", "content": sys},
                 {"role": "user", "content": f"TASK: {task}\n\nCurrent status:\n{self.status_text()}"}]
 

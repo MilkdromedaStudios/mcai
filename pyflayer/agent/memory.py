@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS stats(key TEXT PRIMARY KEY, value REAL);
 CREATE TABLE IF NOT EXISTS seen(kind TEXT, name TEXT, first REAL, count INTEGER DEFAULT 1, PRIMARY KEY(kind, name));
 CREATE TABLE IF NOT EXISTS milestones(name TEXT PRIMARY KEY, achieved REAL, seconds REAL, attempts INTEGER DEFAULT 0,
     last_error TEXT);
+CREATE TABLE IF NOT EXISTS skill_drills(name TEXT PRIMARY KEY, attempts INTEGER DEFAULT 0,
+    successes INTEGER DEFAULT 0, last_result TEXT DEFAULT '', last_practiced REAL DEFAULT 0);
 """
 FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(text, content='episodes', content_rowid='id', tokenize='porter unicode61');
@@ -339,6 +341,37 @@ class Brain:
             rows = self.db.execute("SELECT name, achieved, seconds, attempts, last_error FROM milestones").fetchall()
         return {r[0]: {"achieved": r[1], "seconds": r[2], "attempts": r[3], "last_error": r[4]} for r in rows}
 
+    # ------------------------------------------------------------------ measured movement / survival drills
+    def record_drill(self, name: str, success: bool, detail: str = "") -> dict:
+        """Persist verified action outcomes. LLM claims alone cannot mark success."""
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO skill_drills(name, attempts, successes, last_result, last_practiced) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                "attempts=attempts+1, successes=successes+excluded.successes, "
+                "last_result=excluded.last_result, last_practiced=excluded.last_practiced",
+                (name, 1, int(bool(success)), detail[:300], time.time()))
+            self.db.commit()
+        return self.drill(name)
+
+    def drill(self, name: str) -> dict:
+        with self.lock:
+            row = self.db.execute(
+                "SELECT attempts, successes, last_result, last_practiced FROM skill_drills WHERE name=?",
+                (name,)).fetchone()
+        attempts, successes, detail, when = row or (0, 0, "", 0.0)
+        # Only actual successful controlled trials unlock high-risk skills.
+        accuracy = successes / attempts if attempts else 0.0
+        return {"name": name, "attempts": attempts, "successes": successes,
+                "failures": attempts - successes, "accuracy": round(accuracy, 3),
+                "certified": attempts >= 8 and successes >= 7 and accuracy >= 0.85,
+                "last_result": detail, "last_practiced": when}
+
+    def drills(self) -> dict[str, dict]:
+        with self.lock:
+            names = [r[0] for r in self.db.execute("SELECT name FROM skill_drills").fetchall()]
+        return {name: self.drill(name) for name in names}
+
     # ------------------------------------------------------------------ portable model file
     def export(self, path: Path) -> Path:
         with self.lock:
@@ -350,6 +383,7 @@ class Brain:
                 "hardness": self.db.execute("SELECT block, value, samples FROM hardness").fetchall(),
                 "stats": self.db.execute("SELECT key, value FROM stats").fetchall(),
                 "milestones": self.db.execute("SELECT * FROM milestones").fetchall(),
+                "skill_drills": self.db.execute("SELECT * FROM skill_drills").fetchall(),
                 "seen": self.db.execute("SELECT kind, name, first, count FROM seen").fetchall(),
                 "knowledge": self.db.execute("SELECT name, kind, text, source FROM knowledge").fetchall(),
             }
@@ -373,6 +407,11 @@ class Brain:
                 self.db.execute("INSERT OR REPLACE INTO hardness VALUES (?,?,?)", (b, v, n))
             for row in data.get("milestones", []):
                 self.db.execute("INSERT OR IGNORE INTO milestones VALUES (?,?,?,?,?)", row)
+            for row in data.get("skill_drills", []):
+                self.db.execute(
+                    "INSERT OR REPLACE INTO skill_drills "
+                    "(name, attempts, successes, last_result, last_practiced) VALUES (?,?,?,?,?)",
+                    row)
             for row in data.get("seen", []):
                 self.db.execute("INSERT OR IGNORE INTO seen VALUES (?,?,?,?)", row)
             self.db.commit()
@@ -386,4 +425,5 @@ class Brain:
             return {"episodes": c("episodes"), "facts": c("facts"), "skills": c("skills"),
                     "waypoints": c("waypoints"), "knowledge": c("knowledge"), "sessions": c("sessions"),
                     "milestones_done": self.db.execute("SELECT COUNT(*) FROM milestones WHERE achieved IS NOT NULL").fetchone()[0],
+                    "skill_drills": c("skill_drills"),
                     "learned_hardness": c("hardness"), "seen_blocks": len(self.seen("block"))}

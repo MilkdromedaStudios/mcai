@@ -196,6 +196,7 @@ class Clutch:
         self.placed = None
         self.pickup_tick = 0
         self.saves = 0
+        self._pending = None     # verified result must come from server inventory
         bot.tick_hooks.append(self._tick)
 
     def _ground_below(self):
@@ -217,11 +218,26 @@ class Clutch:
             return
         # pick the water back up once we're down (retry for ~2 s until the source is gone)
         if self.placed:
+            if self._pending and not self._pending["reported"]:
+                here_now = b.world.get(*self.placed)
+                # The local world may predict a water block, so additionally
+                # require the SERVER to exchange water_bucket -> bucket.
+                bucket_exchanged = b.inventory.count("bucket") > self._pending["bucket_before"]
+                landed_safely = (st.on_ground or st.in_water) and b.health >= self._pending["health"]
+                if (b.tick_count >= self.pickup_tick and bucket_exchanged and landed_safely
+                        and here_now is not None and b.gd.is_water[here_now]):
+                    self._pending["reported"] = True
+                    self.saves += 1
+                    b.events.emit("clutch_result", True, f"server bucket changed; landed at {self.placed}")
+                elif b.tick_count > self.pickup_tick + 40:
+                    self._pending["reported"] = True
+                    b.events.emit("clutch_result", False, "landing/water placement unverified after 40 ticks")
             if b.tick_count < self.pickup_tick or not (st.on_ground or st.in_water):
                 return
             here = b.world.get(*self.placed)
             if here is None or not b.gd.is_water[here] or b.tick_count > self.pickup_tick + 40:
                 self.placed = None
+                self._pending = None
                 return
             if (b.tick_count - self.pickup_tick) % 5 == 0:
                 slot = _hotbar_slot(b, "bucket")
@@ -253,11 +269,17 @@ class Clutch:
         if height <= 2.8:                                    # within reach of the ground's top face
             b.send_use_item_now(st.yaw, 90.0)
             self.placed = (math.floor(st.x), gy + 1, math.floor(st.z))
+            self._pending = {
+                "bucket_before": b.inventory.count("bucket"),
+                "health": b.health,
+                "reported": False,
+            }
             # predict the water like the real client does: our physics must enter the water instead of
             # reporting "on ground" (which would make the server apply fall damage before the water counts)
             water = b.gd.block_default.get("water")
             if water is not None:
                 b.world.set(*self.placed, water)
             self.pickup_tick = b.tick_count + 8
-            self.saves += 1
-            b.events.emit("clutch", self.placed)
+            b.events.emit("clutch_attempt", self.placed)
+            # Do not count a save as successful until the authoritative
+            # inventory shows the water bucket was used and we landed safely.

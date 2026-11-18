@@ -71,6 +71,7 @@ DEFAULTS: dict = {
     "training": {
         "hours": 7.0,
         "keep_inventory": True,      # gamerule keep_inventory on the local server while training
+        "allow_advanced_moves": False,  # experimental hazard jumps: certified drills + explicit opt-in
         "wiki_crawl": True,
         "wiki_rate_per_sec": 1.0,
         "reflect_every_min": 20,
