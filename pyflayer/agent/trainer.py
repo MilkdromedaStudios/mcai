@@ -185,6 +185,10 @@ class Trainer:
         self.completed_attempts = 0
         self.successful_attempts = 0
         self.recovery_attempts: dict[str, int] = {}
+        self._finish_lock = threading.Lock()
+        self._finished = False
+        self._autosave_stop = threading.Event()
+        self._model_exports = 0
 
     def note(self, msg):
         line = time.strftime("%H:%M:%S ") + msg
@@ -204,11 +208,19 @@ class Trainer:
         self.successful_attempts = 0
         self.done_this_run.clear()
         self.recovery_attempts.clear()
+        self._finished = False
+        self._model_exports = 0
+        self._autosave_stop.clear()
         self.running = True
         self.start_time = time.time()
         self.end_time = self.start_time + self.hours * 3600
         self.brain.start_session("training")
         self.note(f"overnight training started for {self.hours:.1f} h")
+        self._save_models()  # create both files before any practice; crash-safe snapshot
+        autosave = threading.Thread(target=self._autosave_loop,
+                                    name="train-model-autosave", daemon=True)
+        autosave.start()
+        self._threads.append(autosave)
         self.note("training plan: pursue wood -> tools -> food -> iron -> diamonds -> Nether -> End; "
                   "explore only when resources cannot be found")
         if not self.agent.llm.configured:
@@ -228,7 +240,27 @@ class Trainer:
             self.status = "stopping"
             self.note("training stop requested")
         self.running = False
+        self._autosave_stop.set()
         self.bot.stop()
+
+    def _save_models(self):
+        """Update both full backup and reusable cross-seed model atomically."""
+        full = self.brain.export_latest()
+        universal = self.brain.export_universal()
+        self._model_exports += 1
+        self.note(f"MODEL SAVED: {universal} | full backup: {full}")
+        return universal
+
+    def _autosave_loop(self):
+        # Separate from the action worker: save even during a long mining task.
+        while not self._autosave_stop.wait(180):
+            if not self.running:
+                break
+            try:
+                self._save_models()
+            except Exception as e:  # noqa: BLE001
+                log.exception("model autosave failed")
+                self.note(f"MODEL AUTOSAVE ERROR: {e}")
 
     @property
     def time_left(self) -> float:
@@ -550,6 +582,9 @@ class Trainer:
             "status": self.status,
             "current": self.current,
             "last_error": self.last_error,
+            "model_exports": self._model_exports,
+            "universal_model_path": str(self.brain.path.with_name(self.brain.path.stem + "-universal-model.json.gz")),
+            "full_model_path": str(self.brain.path.with_name(self.brain.path.stem + "-export.json.gz")),
             "skills": self.agent.skill_coach.mastery() if getattr(self.agent, "skill_coach", None) else {},
             "completed_attempts": self.completed_attempts,
             "successful_attempts": self.successful_attempts,
@@ -604,12 +639,18 @@ class Trainer:
         return path
 
     def finish(self):
-        path = self.write_report()
-        model = data_dir("brain") / f"{self.bot.username}-export.json.gz"
-        self.brain.export(model)
-        done = sum(1 for m in self.progress()["milestones"] if m["achieved"])
-        self.brain.end_session(f"training: {done}/{len(self.curriculum)} milestones")
-        self.note(f"training finished: {done}/{len(self.curriculum)} milestones; report {path}; model {model}")
+        # Runtime.shutdown and the training worker may call finish together.
+        with self._finish_lock:
+            if self._finished:
+                return
+            self._autosave_stop.set()
+            path = self.write_report()
+            done = sum(1 for m in self.progress()["milestones"] if m["achieved"])
+            self.brain.end_session(f"training: {done}/{len(self.curriculum)} milestones")
+            universal = self._save_models()
+            self._finished = True
+            self.note(f"training finished: {done}/{len(self.curriculum)} milestones; "
+                      f"report {path}; universal model {universal}")
 
 
 class KnowledgeBuilder:
