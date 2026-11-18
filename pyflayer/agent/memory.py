@@ -405,8 +405,87 @@ class Brain:
                     "stats": self.db.execute("SELECT key,value FROM stats").fetchall(),
                     "milestones": self.db.execute("SELECT * FROM milestones").fetchall(),
                     "skill_drills": self.db.execute("SELECT * FROM skill_drills").fetchall(),
+                    "skill_priors": self.db.execute("SELECT * FROM skill_priors").fetchall(),
                     "seen": self.db.execute("SELECT kind,name,first,count FROM seen").fetchall(),
                     "knowledge": self.db.execute("SELECT name,kind,text,source FROM knowledge").fetchall(),
+                }
+            tmp = path.with_name(path.name + ".part")
+            try:
+                with gzip.open(tmp, "wt", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False)
+                os.replace(tmp, path)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
+        return path
+
+    @staticmethod
+    def _reusable_skill(skill: dict) -> bool:
+        """Reject coordinate-based scripts that only work on the source seed."""
+        if not isinstance(skill, dict) or not isinstance(skill.get("steps"), list):
+            return False
+        for step in skill["steps"]:
+            if not isinstance(step, dict):
+                return False
+            if step.get("tool") in {"goto_waypoint", "set_waypoint", "list_waypoints"}:
+                return False
+            args = step.get("args", {})
+            if not isinstance(args, dict):
+                return False
+            # Parameters such as "{target_x}" are safe: new-world context
+            # provides them. Hardcoded 123,64,-42 world coordinates are not.
+            for key, val in args.items():
+                if key.lower() in {"x", "y", "z", "pos", "position", "waypoint", "seed"}:
+                    if not (isinstance(val, str) and
+                            re.fullmatch(r"\{[a-zA-Z_][a-zA-Z_0-9]*\}", val)):
+                        return False
+        return True
+
+    def export_universal(self, path: Path | None = None) -> Path:
+        """A cross-seed model: transferable skills, knowledge and priors only.
+
+        Never include source-world coordinates, completed quests, episodes,
+        home locations or world-specific achievements. History informs practice,
+        but a new world must verify advanced maneuvers again.
+        """
+        path = Path(path) if path else self.path.with_name(
+            self.path.stem + "-universal-model.json.gz")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self.export_lock:
+            with self.lock:
+                skills = [self.skill(row[0]) for row in self.db.execute(
+                    "SELECT name FROM skills").fetchall()]
+                local = {
+                    n: (a, b) for n, a, b in self.db.execute(
+                        "SELECT name,attempts,successes FROM skill_drills").fetchall()
+                }
+                earlier = {
+                    n: (a, b) for n, a, b in self.db.execute(
+                        "SELECT name,attempts,successes FROM skill_priors").fetchall()
+                }
+                names = set(local) | set(earlier)
+                priors = [
+                    (n, local.get(n, (0, 0))[0] + earlier.get(n, (0, 0))[0],
+                     local.get(n, (0, 0))[1] + earlier.get(n, (0, 0))[1])
+                    for n in sorted(names)
+                ]
+                data = {
+                    "format": "pyflayer-universal-1",
+                    "scope": "seed-independent",
+                    "exported": time.time(),
+                    "strategies": {
+                        "materials": "inspect loaded nearby sources; choose nearest equivalent material",
+                        "action": "verify inventory and world changes before recording success",
+                        "movement": "avoid known lava/unloaded gaps; pathfind around or verify bridges",
+                        "advanced": "revalidate difficult moves in each world before enabling",
+                    },
+                    "skills": [sk for sk in skills if self._reusable_skill(sk)],
+                    "skill_priors": priors,
+                    "hardness": self.db.execute(
+                        "SELECT block,value,samples FROM hardness").fetchall(),
+                    "knowledge": self.db.execute(
+                        "SELECT name,kind,text,source FROM knowledge "
+                        "WHERE source='gamedata' OR source LIKE 'wiki%'").fetchall(),
                 }
             tmp = path.with_name(path.name + ".part")
             try:
@@ -421,8 +500,10 @@ class Brain:
     def import_(self, path: Path):
         with gzip.open(path, "rt", encoding="utf-8") as f:
             data = json.load(f)
-        if data.get("format") not in ("pyflayer-brain-1", "pyflayer-brain-2"):
+        fmt = data.get("format")
+        if fmt not in ("pyflayer-brain-1", "pyflayer-brain-2", "pyflayer-universal-1"):
             raise ValueError("Unsupported PyFlayer model backup")
+        universal = fmt == "pyflayer-universal-1"
         for topic, content, confidence, source in data.get("facts", []):
             self.remember(content, topic, confidence, source)
         for sk in data.get("skills", []):
@@ -447,19 +528,20 @@ class Brain:
                         "INSERT INTO episodes(ts,session,kind,text,importance) VALUES (?,?,?,?,?)",
                         (ts, None, kind, content, importance))
                     known.add(key)
-            for row in data.get("waypoints", []):
+            # Imported universal files never provide prior-world locations.
+            for row in ([] if universal else data.get("waypoints", [])):
                 self.db.execute("INSERT OR REPLACE INTO waypoints VALUES (?,?,?,?,?,?,?,?)", row)
             for block, value, samples in data.get("hardness", []):
                 self.db.execute(
                     "INSERT OR REPLACE INTO hardness VALUES (?,?,?)", (block, value, samples))
-            for key, value in data.get("stats", []):
+            for key, value in ([] if universal else data.get("stats", [])):
                 self.db.execute(
                     "INSERT INTO stats(key,value) VALUES (?,?) "
                     "ON CONFLICT(key) DO UPDATE SET value=MAX(stats.value, excluded.value)",
                     (key, value))
-            for row in data.get("milestones", []):
+            for row in ([] if universal else data.get("milestones", [])):
                 self.db.execute("INSERT OR IGNORE INTO milestones VALUES (?,?,?,?,?)", row)
-            for row in data.get("skill_drills", []):
+            for row in ([] if universal else data.get("skill_drills", [])):
                 self.db.execute(
                     "INSERT INTO skill_drills(name,attempts,successes,last_result,last_practiced) "
                     "VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
@@ -468,11 +550,19 @@ class Brain:
                     "last_result=CASE WHEN excluded.last_practiced >= skill_drills.last_practiced "
                     "THEN excluded.last_result ELSE skill_drills.last_result END, "
                     "last_practiced=MAX(skill_drills.last_practiced,excluded.last_practiced)", row)
-            for row in data.get("seen", []):
+            for name, attempts, successes in data.get("skill_priors", []):
+                # Priors are advisory; local mastery remains independent.
+                self.db.execute(
+                    "INSERT INTO skill_priors(name,attempts,successes) VALUES (?,?,?) "
+                    "ON CONFLICT(name) DO UPDATE SET attempts=MAX(skill_priors.attempts, excluded.attempts), "
+                    "successes=MAX(skill_priors.successes, excluded.successes)",
+                    (name, attempts, successes))
+            for row in ([] if universal else data.get("seen", [])):
                 self.db.execute("INSERT OR IGNORE INTO seen VALUES (?,?,?,?)", row)
             self.db.commit()
         for name, kind, content, source in data.get("knowledge", []):
-            self.set_knowledge(name, kind, content, source)
+            if not universal or source == "gamedata" or source.startswith("wiki"):
+                self.set_knowledge(name, kind, content, source)
         self.commit()
 
     def overview(self) -> dict:
