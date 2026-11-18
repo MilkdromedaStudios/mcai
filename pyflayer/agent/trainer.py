@@ -385,6 +385,8 @@ class Trainer:
                     if not self.running:
                         break
                     self._survival_upkeep()
+                    if self._priority_finds():
+                        continue
                     ms = self._next_milestone(fails)
                     if ms is None:
                         self.status = "completed"
@@ -467,6 +469,8 @@ class Trainer:
                         self.done_this_run.add(ms.name)
                         break
                     self._survival_upkeep()
+                    if self._priority_finds():
+                        continue
                     self.current = ms.name
                     self.bot.chat(f"Next step: {ms.goal}"[:250])
                     self._attempt(ms, fails)
@@ -477,6 +481,23 @@ class Trainer:
             self.running = False
             self.status = "idle"
             self.write_report()
+
+    def _priority_finds(self) -> bool:
+        """Saved diamonds (etc.) we can now mine come first - don't walk past them to do the next step."""
+        finds = getattr(self.agent, "finds", None)
+        if not finds or not finds.pending():
+            return False
+        prev = self.current
+        self.current = "mining saved finds"
+        try:
+            return finds.run_pending()
+        except ActionError as e:
+            if any(k in str(e) for k in ("stopped", "died", "disconnected")):
+                raise
+            self.note(f"priority finds: {e}")
+            return False
+        finally:
+            self.current = prev
 
     def _next_milestone(self, fails):
         """Follow prerequisites in order; never skip wood/tools to wander aimlessly."""

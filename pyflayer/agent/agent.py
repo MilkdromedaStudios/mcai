@@ -254,6 +254,8 @@ class Agent:
         self._actuation_lock = threading.RLock()
         from .skill_training import SkillCoach
         self.skill_coach = SkillCoach(self)
+        from .priority import Finds
+        self.finds = Finds(self)
         # The pathfinder may consider an advanced hazard move only after actual
         # dry-ground drill certification and explicit opt-in.
         self.bot.allow_lava_jumps = self.skill_coach.lava_jump_ready
@@ -293,11 +295,13 @@ class Agent:
         self._reflex_thread = threading.Thread(target=self._reflex_loop, name="reflexes", daemon=True)
         self._reflex_thread.start()
         self.watcher.start()
+        self.finds.start()
         self.specialists.start()
 
     def stop(self):
         self.running = False
         self.llm.cancelled = True
+        self.finds.stop()
         self.specialists.stop()
         self.watcher.stop()
         self.bot.stop()

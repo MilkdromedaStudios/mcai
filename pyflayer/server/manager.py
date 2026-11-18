@@ -512,6 +512,7 @@ class MinecraftServer:
             for line in proc.stdout:
                 line = line.rstrip()
                 self.lines.append(line)
+                self.line_total = getattr(self, "line_total", 0) + 1
                 output.write(line + "\n")
                 output.flush()
                 if ("Done (" in line and "For help" in line) or re.search(

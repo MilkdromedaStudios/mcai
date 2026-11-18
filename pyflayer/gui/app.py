@@ -234,15 +234,28 @@ class App:
         self.status_label.pack(side="left", fill="x", expand=True)
         st.bind("<Configure>", lambda e: self.status_label.configure(wraplength=max(200, e.width - 50)))
 
-        # ---- message box
+        # ---- message box with a Bot / Server switch (Server = run console commands like "op <you>")
         ask = ttk.Frame(root)
         ask.pack(fill="x", pady=(gap, 0))
+        self.mode = "bot"
+        seg = ttk.Frame(ask)
+        seg.pack(side="left", padx=(0, 6))
+        self.mode_btns = {}
+        for m, label in (("bot", "Bot"), ("server", "Server")):
+            b = ttk.Button(seg, text=label, width=7, command=lambda m=m: self.set_mode(m))
+            b.pack(side="left", padx=(0, 2))
+            self.mode_btns[m] = b
         self.ask_var = tk.StringVar()
-        entry = ttk.Entry(ask, textvariable=self.ask_var)
+        entry = self.ask_entry = ttk.Entry(ask, textvariable=self.ask_var)
         entry.pack(side="left", fill="x", expand=True)
         entry.bind("<Return>", lambda e: self.do_tell())
+        entry.bind("<Up>", lambda e: self._history_step(-1))
+        entry.bind("<Down>", lambda e: self._history_step(1))
         ttk.Button(ask, text="Send", style="Accent.TButton", command=self.do_tell).pack(side="left", padx=(6, 0))
-        self._placeholder(entry, "Tell your bot anything: find iron, build a shelter, get to the End ...")
+        self._cmd_history: list[str] = []
+        self._cmd_pos = 0
+        self._placeholder(entry, "")
+        self.set_mode("bot")
 
         # ---- conversation + activity, side by side on wide windows, stacked on small ones
         panes = ttk.Frame(root)
@@ -250,6 +263,9 @@ class App:
         convo = TextPanel(panes, "Conversation", height=5 if c else 6, compact=c)
         activity = TextPanel(panes, "Activity", height=6 if c else 6, mono=True, compact=c)
         self.chat, self.log = convo.text, activity.text
+        self.activity_panel = activity
+        self._srv_seen = 0
+        self.log.tag_configure("cmd", foreground=ACCENT)
         self.chat.tag_configure("you", foreground=ACCENT, font=FONT_BOLD)
         self.chat.tag_configure("bot", foreground=SUCCESS, font=FONT_BOLD)
         self.chat.tag_configure("time", foreground=MUTED)
@@ -295,12 +311,11 @@ class App:
             panes.rowconfigure(0, weight=1)
 
     def _placeholder(self, entry, text):
-        var = entry.cget("textvariable")
-        state = {"on": False}
+        state = {"on": False, "text": text}
 
         def show(_e=None):
-            if not entry.get():
-                entry.insert(0, text)
+            if not entry.get() and state["text"]:
+                entry.insert(0, state["text"])
                 entry.configure(foreground=MUTED)
                 state["on"] = True
 
@@ -311,9 +326,56 @@ class App:
                 state["on"] = False
         entry.bind("<FocusIn>", hide, add="+")
         entry.bind("<FocusOut>", show, add="+")
+        state["show"], state["hide"] = show, hide
         self._ph = state
         show()
-        del var
+
+    PLACEHOLDERS = {
+        "bot": "Tell your bot anything: find iron, build a shelter, get to the End ...",
+        "server": "Server command: op YourName · gamemode creative YourName · time set day · weather clear",
+    }
+
+    def set_mode(self, mode):
+        """Bot = talk to the selected bot. Server = run commands on the server console (op, gamemode, tp ...)."""
+        self.mode = mode
+        for m, b in self.mode_btns.items():
+            b.configure(style="Accent.TButton" if m == mode else "TButton")
+        ph = self._ph
+        if ph["on"]:
+            ph["hide"]()
+        ph["text"] = self.PLACEHOLDERS[mode]
+        if self.root.focus_get() is not self.ask_entry:
+            ph["show"]()
+        if hasattr(self, "activity_panel"):
+            self.activity_panel.title.configure(text="SERVER CONSOLE" if mode == "server" else "ACTIVITY")
+            self.log.configure(state="normal")
+            self.log.delete("1.0", "end")
+            self.log.configure(state="disabled")
+            self._hist_seen = 0
+            self._srv_seen = 0
+
+    def _history_step(self, d):
+        if not self._cmd_history:
+            return "break"
+        if self._ph["on"]:
+            self._ph["hide"]()
+        self._cmd_pos = max(0, min(len(self._cmd_history), self._cmd_pos + d))
+        self.ask_var.set(self._cmd_history[self._cmd_pos] if self._cmd_pos < len(self._cmd_history) else "")
+        self.ask_entry.icursor("end")
+        return "break"
+
+    def run_server_command(self, text):
+        cmd = text.strip().lstrip("/")
+        srv = self.rt.server
+        if srv and getattr(srv, "running", False):
+            srv.command(cmd)
+            return f"> {cmd}"
+        # joined someone else's server: send it as a chat command from the bot (needs op there)
+        s = self.rt.sessions.get(self.rt.current)
+        if s and s.bot and s.bot.spawned.is_set():
+            s.bot.chat("/" + cmd)
+            return f"> /{cmd}  (sent by {self.rt.current}; it needs op on that server)"
+        raise RuntimeError("No server is running here and no bot is online. Press Server (or Start bot) first.")
 
     # ================================================================== hero cards
     def _rebuild_cards(self):
@@ -412,6 +474,19 @@ class App:
         if not text:
             return
         self.ask_var.set("")
+        self._cmd_history = (self._cmd_history + [text])[-50:]
+        self._cmd_pos = len(self._cmd_history)
+        if self.mode == "server":
+            try:
+                echo = self.run_server_command(text)
+            except RuntimeError as e:
+                messagebox.showerror("Server command", str(e))
+                return
+            self.log.configure(state="normal")
+            self.log.insert("end", echo + "\n", "cmd")
+            self.log.see("end")
+            self.log.configure(state="disabled")
+            return
 
         def go():
             agent = self.rt.session().agent or self.rt.start_agent(self.rt.current)
@@ -627,9 +702,24 @@ class App:
         online = bool(b and b.spawned.is_set())
         self.status_dot.itemconfigure(self._dot, fill=SUCCESS if online else "#f5a524" if (b and b.connected)
                                       else MUTED)
+        if self.mode == "server":
+            srv = rt.server
+            total = getattr(srv, "line_total", 0) if srv else 0
+            if srv and total != self._srv_seen:
+                lines = list(srv.lines)
+                n = min(total - self._srv_seen, len(lines)) if self._srv_seen else min(len(lines), 200)
+                self.log.configure(state="normal")
+                for line in lines[-n:] if n > 0 else []:
+                    self.log.insert("end", line + "\n")
+                count = int(self.log.index("end-1c").split(".")[0])
+                if count > 1500:
+                    self.log.delete("1.0", f"{count - 1500}.0")
+                self.log.see("end")
+                self.log.configure(state="disabled")
+                self._srv_seen = total
         if s and s.agent:
             h = s.agent.history
-            if len(h) != self._hist_seen:
+            if self.mode == "bot" and len(h) != self._hist_seen:
                 new = h[self._hist_seen:] if self._hist_seen <= len(h) else h[-80:]
                 self.log.configure(state="normal")
                 self.log.insert("end", "\n".join(new) + "\n")
