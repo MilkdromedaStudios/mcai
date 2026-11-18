@@ -12,7 +12,14 @@ import time
 from ..bot.actions import ActionError
 from ..bot.pathfinder import GoalXZ
 
-DRILLS = ("resource_choice", "safe_navigation", "sprint_jump", "controlled_placement")
+DRILLS = ("resource_choice", "safe_navigation", "sprint_jump", "controlled_placement", "chat_teamwork")
+DRILL_LABELS = {
+    "resource_choice": "Gather wood (nearest trees)",
+    "safe_navigation": "Walk safely",
+    "sprint_jump": "Sprint-jump",
+    "controlled_placement": "Place blocks",
+    "chat_teamwork": "Chat & teamwork (talk to other AIs, read chat)",
+}
 # No high-stakes actions on the default setting. The bot needs verified
 # land-based practice before any optional lava-gap jump is even considered.
 
@@ -157,6 +164,62 @@ class SkillCoach:
                 pass
             return ok, f"verified place + reclaim {item} at {target}"
         return None
+
+    def _chat_teamwork(self) -> tuple[bool, str] | None:
+        """Read chat, tell teammates (other bots / players) what we're doing, and get an answer back.
+        Verified from the real chat log, not from the AI's own claims."""
+        b, agent = self.bot, self.agent
+        me = b.username
+        # 1) reading chat: our own message must come back from the server
+        tag = f"[{int(time.time()) % 10000}]"
+        t0 = time.time()
+        b.chat(f"radio check {tag}")
+        heard = False
+        for _ in range(60):
+            b._wait(1)
+            if any(ts >= t0 and tag in txt for ts, _s, txt in list(b.chat_log)):
+                heard = True
+                break
+        if not heard:
+            return False, "could not read our own message back from chat"
+        # 2) talking: summarise state and tell teammates something useful
+        mates = sorted({n for n in b.players.values() if n and n != me})
+        bots = [n for n in mates if n in getattr(agent, "teammates", lambda: [])()] or mates
+        inv = ", ".join(f"{c} {n.replace('_', ' ')}" for n, c in sorted(b.inventory.counts().items(),
+                                                                          key=lambda kv: -kv[1])[:5]) or "nothing"
+        x, y, z = b.block_pos
+        task = agent.current_task or "nothing yet"
+        recent = [f"<{s_}> {t}" for ts, s_, t in list(b.chat_log)[-8:] if s_ and s_ != me]
+        status = f"I'm at {x} {y} {z} ({b.dimension}), have {inv}, working on {task}."
+        msg = status
+        if agent.llm.configured:
+            try:
+                prompt = (f"You are {me}, a Minecraft bot on a team. Recent chat: {recent or 'none'}. "
+                          f"Your status: {status} Teammates online: {bots or 'none'}. Write ONE short chat line "
+                          f"(max 120 chars) to {'teammate ' + bots[0] if bots else 'the team'}: share your status "
+                          f"and ask them what they're doing or propose who gathers what. Reply with only the line.")
+                reply = agent.llm.chat([{"role": "user", "content": prompt}], max_tokens=60)
+                line = (reply.content or "").strip().strip('"').splitlines()
+                if line and line[0]:
+                    msg = line[0][:200]
+            except Exception as e:  # noqa: BLE001 - fall back to the plain status line
+                agent._note(f"[skills] chat drill AI line failed: {e}")
+        if bots and bots[0].lower() not in msg.lower():
+            msg = f"{bots[0]}, {msg}"
+        t1 = time.time()
+        b.chat(msg[:240])
+        self.brain.remember(f"I told the team: {msg}", "teamwork", 0.4, "chat")
+        if not bots:
+            return True, f"read chat and sent a status update (no teammates online to answer): {msg[:80]}"
+        # 3) listening: a teammate must answer within 45 s
+        end = time.time() + 45
+        while time.time() < end:
+            b._wait(5)
+            for ts, s_, txt in list(b.chat_log):
+                if ts > t1 and s_ in bots:
+                    self.brain.remember(f"{s_} told me: {txt}", "teamwork", 0.5, "chat")
+                    return True, f"talked with {s_}: they answered \"{txt[:60]}\""
+        return False, f"told {bots[0]} our status but got no answer in 45 s"
 
     def practice_one(self, name: str | None = None) -> str:
         """Choose the least-practiced available dry drill and measure the result."""

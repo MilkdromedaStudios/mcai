@@ -170,3 +170,32 @@ class TestLavaHazards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestChatDrill(unittest.TestCase):
+    def test_talks_to_teammate_and_hears_answer(self):
+        import time as _t
+        log = []
+
+        class B:
+            username, dimension, block_pos = "PyBot", "overworld", (1, 64, 2)
+            players = {"u1": "PyBot", "u2": "Helper"}
+            chat_log = log
+            events = FakeEvents()
+            inventory = SimpleNamespace(counts=lambda: {"oak_log": 3})
+
+            def chat(self, m):
+                log.append((_t.time(), "PyBot", m))
+                if m.startswith("Helper"):
+                    log.append((_t.time() + 0.01, "Helper", "I'm mining iron, you get wood"))
+
+            def _wait(self, n):
+                pass
+        brain = Mock()
+        agent = SimpleNamespace(bot=B(), brain=brain, current_task="wood", _note=lambda m: None,
+                                llm=SimpleNamespace(configured=False))
+        coach = SkillCoach.__new__(SkillCoach)
+        coach.agent, coach.bot, coach.brain = agent, agent.bot, brain
+        ok, detail = coach._chat_teamwork()
+        self.assertTrue(ok, detail)
+        self.assertIn("Helper", detail)
