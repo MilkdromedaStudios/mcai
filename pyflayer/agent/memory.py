@@ -507,7 +507,7 @@ class Brain:
         for topic, content, confidence, source in data.get("facts", []):
             self.remember(content, topic, confidence, source)
         for sk in data.get("skills", []):
-            if not sk:
+            if not sk or (universal and not self._reusable_skill(sk)):
                 continue
             name = self.save_skill(sk["name"], sk["description"], sk["steps"], sk.get("params"))
             with self.lock:
