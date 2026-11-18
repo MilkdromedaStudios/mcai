@@ -297,6 +297,10 @@ class Runtime:
                         s.bot.disconnect("bye")
                     if s.brain:
                         s.brain.commit()
+                        # Persist transferable skills even if the user only
+                        # chatted, played, or trained one skill this session.
+                        s.brain.export_latest()
+                        s.brain.export_universal()
                 except Exception:  # noqa: BLE001
                     log.exception("shutdown of %s failed", s.name)
             if self.server:
