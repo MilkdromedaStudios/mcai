@@ -489,10 +489,24 @@ class ToolBox:
         def gather_nearest_wood(count=8):
             return self.bot.planner.gather_wood(max(1, min(32, int(count))))
 
+        @add("saved_finds",
+             "List the valuable ores (diamonds, ancient debris) I have seen and saved but not mined yet.", {})
+        def saved_finds():
+            return a.finds.summary()
+
+        @add("mine_saved_finds",
+             "Go back to saved diamonds / ancient debris and mine them now (needs the right pickaxe). "
+             "Do this before other work when it says they are ready.", {})
+        def mine_saved_finds():
+            if not a.finds.pending():
+                return "nothing ready: " + a.finds.summary()
+            a.finds.run_pending()
+            return "done; still saved: " + a.finds.summary()
+
         @add("practice_skill",
              "Practise ONE dry-ground movement/placement/resource skill, record real success or failure. "
              "Never start a fall/lava stunt to train.",
-             {"name": S("optional: resource_choice, safe_navigation, sprint_jump, controlled_placement")})
+             {"name": S("optional: resource_choice, safe_navigation, sprint_jump, controlled_placement, chat_teamwork")})
         def practice_skill(name=None):
             with a._actuation_lock:
                 return a.skill_coach.practice_one(name)

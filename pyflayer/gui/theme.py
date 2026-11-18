@@ -208,8 +208,9 @@ class TextPanel(ttk.Frame):
     def __init__(self, master, title, height=6, mono=False, compact=False):
         super().__init__(master, style="Panel.TFrame", padding=(10, 6, 6, 8) if compact else (12, 8, 8, 10))
         if title:
-            ttk.Label(self, text=title.upper(), style="PanelMuted.TLabel",
-                      font=("DejaVu Sans", 8, "bold")).pack(anchor="w", pady=(0, 4))
+            self.title = ttk.Label(self, text=title.upper(), style="PanelMuted.TLabel",
+                                   font=("DejaVu Sans", 8, "bold"))
+            self.title.pack(anchor="w", pady=(0, 4))
         ttk.Style(self).configure("Flat.TFrame", background=SURFACE)
         body = ttk.Frame(self, style="Flat.TFrame")
         body.pack(fill="both", expand=True)

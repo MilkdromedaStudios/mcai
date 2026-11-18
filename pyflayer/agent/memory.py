@@ -284,6 +284,11 @@ class Brain:
             out.sort(key=lambda w: math.dist(w["pos"], near))
         return out[:k]
 
+    def delete_waypoint(self, name: str):
+        with self.lock:
+            self.db.execute("DELETE FROM waypoints WHERE name=?", (name,))
+            self.db.commit()
+
     def waypoint(self, name: str) -> dict | None:
         with self.lock:
             r = self.db.execute("SELECT name, dim, x, y, z, kind, note FROM waypoints WHERE name=?", (name,)).fetchone()
