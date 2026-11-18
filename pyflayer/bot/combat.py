@@ -52,6 +52,31 @@ class Combat:
             self.target_id = e.id if e else None
         return e
 
+    def _direct_chase_unsafe(self, target) -> bool:
+        """Don't blindly sprint over lava or unloaded/missing ground.
+
+        A pathfinder route may jump a *trained* one-cell gap or place a verified
+        bridge; the fast close-range controller must never do it by accident.
+        """
+        b = self.bot
+        if b.state.in_water or b.state.on_climbable:
+            return False
+        dx, dz = target.x - b.state.x, target.z - b.state.z
+        d = math.hypot(dx, dz)
+        if d < 0.01:
+            return False
+        ux, uz = dx / d, dz / d
+        y = math.floor(b.state.y)
+        for ahead in (0.85, 1.45):
+            x = math.floor(b.state.x + ux * ahead)
+            z = math.floor(b.state.z + uz * ahead)
+            pf = b.pathfinder
+            if pf.lava(x, y, z) or pf.lava(x, y - 1, z):
+                return True
+            if not pf.can_stand(x, y, z) and not pf.water(x, y, z):
+                return True
+        return False
+
     # ------------------------------------------------------------------ tick (50 ms)
     def _tick(self):
         if not self.active or self.bot.dead:
@@ -69,8 +94,14 @@ class Combat:
         dist = b.entity_distance(e)
         horiz = math.hypot(e.x - b.state.x, e.z - b.state.z)
         walking_path = self._path_thread is not None and self._path_thread.is_alive()
-        if horiz > 24 or abs(e.y - b.state.y) > 3 or (walking_path and horiz > 6):
+        if horiz > 24 or abs(e.y - b.state.y) > 3 or walking_path:
             self._chase_far(e)        # the path follower steers; do not fight it for the controls
+            return
+        if dist > 2.2 and self._direct_chase_unsafe(e):
+            # The route worker may choose a verified bridge (or a certified
+            # one-block jump), instead of direct sprinting into lava.
+            c.clear()
+            self._chase_far(e)
             return
         # aim (instant - a player flicks; the server only sees the rotation we send this tick)
         ex, ey, ez = b.eye
