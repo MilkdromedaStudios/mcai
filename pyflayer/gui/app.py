@@ -15,58 +15,131 @@ import traceback
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from ..config import DATA_DIR
-
-BG, PANEL, FIELD, FG, MUTED, ACCENT = "#1e1f22", "#2b2d31", "#26272b", "#e6e6e6", "#9aa0a6", "#3d7eff"
-CARD_COLORS = ["#3d7eff", "#e5484d", "#30a46c", "#f5a524", "#8e4ec6"]
+from .theme import (ACCENT, BG, CARD_COLORS, DANGER, FG, FONT_BOLD, MUTED, SELECTED, SUCCESS, SURFACE,
+                    TextPanel, Theme)
 
 
 class ScrollFrame(ttk.Frame):
-    """A frame whose content scrolls (vertical or horizontal) with the mouse wheel / touch-pad / scrollbar."""
+    """A frame whose content scrolls with the scrollbar, mouse wheel or touch-pad.
 
-    def __init__(self, master, padding=0, orient="vertical", height=None):
+    The scrollbar only shows when the content doesn't fit, and the content stretches to fill the space
+    when it does fit (so text boxes inside can still grow with the window)."""
+
+    def __init__(self, master, padding=0, orient="vertical", height=None, fill=True):
         super().__init__(master)
         self.orient = orient
+        self.fill = fill
         self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0, height=height or 0)
-        if orient == "vertical":
-            self.bar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-            self.canvas.configure(yscrollcommand=self.bar.set)
-        else:
-            self.bar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
-            self.canvas.configure(xscrollcommand=self.bar.set)
+        self.canvas.scrollable = self
+        vertical = orient == "vertical"
+        self.bar = ttk.Scrollbar(self, orient=orient,
+                                 command=self.canvas.yview if vertical else self.canvas.xview)
+        self.canvas.configure(**{("yscrollcommand" if vertical else "xscrollcommand"): self._set})
         self.inner = ttk.Frame(self.canvas, padding=padding)
-        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.inner.scrollable = self
         self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        if orient == "vertical":
-            self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._win, width=e.width))
-            self.canvas.pack(side="left", fill="both", expand=True)
-            self.bar.pack(side="right", fill="y")
+        # grid keeps a fixed slot for the bar, so showing/hiding it can't make the layout jump or loop
+        if vertical:
+            self.canvas.grid(row=0, column=0, sticky="nsew")
+            self.bar.grid(row=0, column=1, sticky="ns", padx=(2, 2), pady=2)
+            self.columnconfigure(0, weight=1)
+            self.rowconfigure(0, weight=1)
         else:
-            self.canvas.pack(side="top", fill="x", expand=True)
-            # the horizontal bar only appears when the content is wider than the window
-            self.inner.bind("<Configure>", self._fit_h, add="+")
-            self.canvas.bind("<Configure>", self._fit_h, add="+")
-        for w in (self.canvas, self.inner):
-            w.bind("<Enter>", self._bind_wheel)
-            w.bind("<Leave>", self._unbind_wheel)
+            self.canvas.grid(row=0, column=0, sticky="nsew")
+            self.bar.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 2))
+            self.columnconfigure(0, weight=1)
+            self.rowconfigure(0, weight=1)
+        self.inner.bind("<Configure>", self._layout)
+        self.canvas.bind("<Configure>", self._layout)
+        # the content's *requested* size can change without any <Configure> event (text wraps, rows added),
+        # so re-check it now and then; otherwise the scroll area goes stale and the scrollbar breaks
+        self._last_req = None
+        self.after(300, self._watch)
 
-    def _fit_h(self, _e=None):
-        need = self.inner.winfo_reqwidth() > self.canvas.winfo_width() > 1
-        if need and not self.bar.winfo_ismapped():
-            self.bar.pack(side="bottom", fill="x")
-        elif not need and self.bar.winfo_ismapped():
-            self.bar.pack_forget()
+    def _watch(self):
+        try:
+            req = (self.inner.winfo_reqwidth(), self.inner.winfo_reqheight(),
+                   self.canvas.winfo_width(), self.canvas.winfo_height())
+        except tk.TclError:
+            return
+        if req != self._last_req:
+            self._last_req = req
+            self._layout()
+        self.after(300, self._watch)
 
-    def _scroll(self, n):
-        (self.canvas.yview_scroll if self.orient == "vertical" else self.canvas.xview_scroll)(n, "units")
+    def _layout(self, _e=None):
+        c, inner = self.canvas, self.inner
+        cw, ch = c.winfo_width(), c.winfo_height()
+        if self.orient == "vertical":
+            h = max(inner.winfo_reqheight(), ch if self.fill else 0)
+            c.itemconfigure(self._win, width=cw, height=h)
+            c.configure(scrollregion=(0, 0, cw, h))
+        else:
+            w = max(inner.winfo_reqwidth(), cw)
+            c.itemconfigure(self._win, width=w, height=ch)
+            c.configure(scrollregion=(0, 0, w, ch))
 
-    def _bind_wheel(self, _e=None):
-        self.canvas.bind_all("<MouseWheel>", lambda e: self._scroll(-1 if e.delta > 0 else 1))
-        self.canvas.bind_all("<Button-4>", lambda e: self._scroll(-2))
-        self.canvas.bind_all("<Button-5>", lambda e: self._scroll(2))
+    def _set(self, lo, hi):
+        self.bar.set(lo, hi)
+        fits = float(lo) <= 0.0 and float(hi) >= 1.0
+        # keep the slot but hide the thumb when everything fits
+        self.bar.state(["disabled"] if fits else ["!disabled"])
+        if fits:
+            self.bar.grid_remove()
+        else:
+            self.bar.grid()
 
-    def _unbind_wheel(self, _e=None):
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            self.canvas.unbind_all(seq)
+    def wheel(self, units):
+        lo, hi = (self.canvas.yview() if self.orient == "vertical" else self.canvas.xview())
+        if lo <= 0.0 and hi >= 1.0:
+            return False
+        (self.canvas.yview_scroll if self.orient == "vertical" else self.canvas.xview_scroll)(units, "units")
+        return True
+
+
+def _wheel_target(widget):
+    """Nearest scrollable thing under the mouse: a Text box, or a ScrollFrame."""
+    w = widget
+    while w is not None:
+        if isinstance(w, tk.Text):
+            return w
+        sf = getattr(w, "scrollable", None)
+        if sf is not None:
+            return sf
+        w = getattr(w, "master", None)
+    return None
+
+
+def install_wheel(root):
+    """One global mouse-wheel handler: scroll whatever is under the pointer (Text first, then the page).
+    Works on Windows/macOS (<MouseWheel>) and Linux / Raspberry Pi (<Button-4/5>)."""
+    def on_wheel(e, units):
+        try:
+            w = root.winfo_containing(e.x_root, e.y_root)
+        except (KeyError, tk.TclError):
+            return
+        t = _wheel_target(w)
+        while t is not None:
+            if isinstance(t, tk.Text):
+                lo, hi = t.yview()
+                if not (lo <= 0.0 and hi >= 1.0) and not (units < 0 and lo <= 0.0) and not (units > 0 and hi >= 1.0):
+                    t.yview_scroll(units, "units")
+                    return "break"
+            elif t.wheel(units if t.orient == "vertical" or not (e.state & 1) else units):
+                return "break"
+            t = _wheel_target(getattr(t, "master", None))
+        return "break"
+
+    root.bind_all("<MouseWheel>", lambda e: on_wheel(e, -1 if e.delta > 0 else 1), add="")
+    root.bind_all("<Shift-MouseWheel>", lambda e: on_wheel(e, -1 if e.delta > 0 else 1), add="")
+    root.bind_all("<Button-4>", lambda e: on_wheel(e, -2), add="")
+    root.bind_all("<Button-5>", lambda e: on_wheel(e, 2), add="")
+
+
+def _rounded(canvas, x1, y1, x2, y2, r, **kw):
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2, x1, y2,
+           x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(pts, smooth=True, **kw)
 
 
 class App:
@@ -79,16 +152,17 @@ class App:
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         self.compact = mode in ("1", "true", "yes", "on") or (mode == "auto" and (sw < 1000 or sh < 700))
         if self.compact:
-            self.root.geometry(f"{min(sw, 800)}x{min(sh - 40, 460)}")
+            self.root.geometry(f"{min(sw, 720)}x{min(sh - 40, 480)}")
         else:
-            self.root.geometry("980x660")
-        self.root.minsize(420, 300)
+            self.root.geometry("1000x700")
+        self.root.minsize(360, 280)
         self.busy = False
         self.update_notice = ""
         self._hist_seen = 0
         self._chat_seen = 0
         self._cards: dict[str, dict] = {}
         self._theme()
+        install_wheel(self.root)
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(400, self.refresh)
@@ -97,98 +171,149 @@ class App:
 
     # ================================================================== look
     def _theme(self):
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        self.root.configure(bg=BG)
-        style.configure(".", background=BG, foreground=FG, fieldbackground=FIELD, bordercolor="#3a3c41",
-                        lightcolor=PANEL, darkcolor=PANEL, troughcolor=PANEL, focuscolor=ACCENT,
-                        selectbackground=ACCENT, selectforeground="#ffffff", insertcolor=FG)
-        pad = (8, 6) if self.compact else (12, 8)
-        style.configure("TButton", background=PANEL, foreground=FG, padding=pad)
-        style.map("TButton", background=[("active", "#404249"), ("pressed", ACCENT)])
-        style.configure("Accent.TButton", background=ACCENT, foreground="#ffffff", padding=pad)
-        style.map("Accent.TButton", background=[("active", "#5a92ff")])
-        style.configure("TLabelframe", background=BG, bordercolor="#3a3c41")
-        style.configure("TLabelframe.Label", background=BG, foreground=ACCENT)
-        style.configure("TEntry", fieldbackground=FIELD, foreground=FG)
-        style.configure("TCombobox", fieldbackground=FIELD, foreground=FG, background=PANEL, arrowcolor=FG)
-        style.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", FG)])
-        style.configure("Card.TFrame", background=PANEL)
-        style.configure("Sel.TFrame", background="#35373d")
-        for opt, val in (("*Text.Background", FIELD), ("*Text.Foreground", FG), ("*Text.selectBackground", ACCENT),
-                         ("*Listbox.Background", FIELD), ("*Listbox.Foreground", FG),
-                         ("*TCombobox*Listbox.background", FIELD), ("*TCombobox*Listbox.foreground", FG),
-                         ("*Toplevel.Background", BG)):
-            self.root.option_add(opt, val)
+        self.theme = Theme(self.root, self.compact)
 
     # ================================================================== layout
     def _build(self):
-        # ---- hero cards
-        self.cards_scroll = ScrollFrame(self.root, padding=(6, 6, 6, 2), orient="horizontal",
-                                        height=76 if self.compact else 84)
+        c = self.compact
+        gap = 6 if c else 10
+        # everything lives in one page that scrolls when the window is too small
+        page = ScrollFrame(self.root, padding=(gap, gap, gap, gap))
+        page.pack(fill="both", expand=True)
+        root = self.page = page.inner
+
+        # ---- header
+        head = ttk.Frame(root)
+        head.pack(fill="x", pady=(0, gap // 2))
+        ttk.Label(head, text="PyFlayer", style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text="  AI Minecraft bots", style="Muted.TLabel").pack(side="left", pady=(3, 0))
+        ttk.Button(head, text="Settings", command=self.do_settings).pack(side="right")
+
+        # ---- hero cards (scroll sideways when there are many bots)
+        self.cards_scroll = ScrollFrame(root, padding=(0, 2, 0, 4), orient="horizontal",
+                                        height=72 if c else 84)
         self.cards_scroll.pack(fill="x")
         self.cards_row = self.cards_scroll.inner
         self._rebuild_cards()
 
-        # ---- the only buttons
-        bar = ttk.Frame(self.root, padding=(6, 2))
+        # ---- actions
+        ttk.Label(root, text="BOT", style="Section.TLabel").pack(anchor="w", pady=(gap // 2, 2))
+        bar = ttk.Frame(root)
         bar.pack(fill="x")
-        buttons = [("Start bot", self.do_start, "Accent.TButton"), ("Stop", self.do_stop, "TButton"),
+        buttons = [("Start bot", self.do_start, "Accent.TButton"), ("Stop", self.do_stop, "Danger.TButton"),
                    ("Server", self.do_server, "TButton"), ("Join server", self.do_join, "TButton"),
-                   ("Import model", self.do_model, "TButton"), ("Export universal model", self.do_export_model, "TButton"),
-                   ("Train overnight", self.do_train, "TButton"),
-                   ("Train one skill", self.do_train_skill, "TButton"),
-                   ("Settings", self.do_settings, "TButton")]
-        per_row = 4 if self.compact else 7
-        for i, (text, cmd, style) in enumerate(buttons):
-            ttk.Button(bar, text=text, command=cmd, style=style).grid(row=i // per_row, column=i % per_row,
-                                                                       padx=2, pady=2, sticky="ew")
-        for c in range(per_row):
-            bar.columnconfigure(c, weight=1)
+                   ("Train overnight", self.do_train, "TButton"), ("Train one skill", self.do_train_skill, "TButton"),
+                   ("Import model", self.do_model, "TButton"),
+                   ("Export model", self.do_export_model, "TButton")]
+        self._btns = [ttk.Button(bar, text=t, command=cmd, style=st) for t, cmd, st in buttons]
+        self._btn_cols = 0
 
-        # ---- direct chat with the selected bot (also supports action requests)
-        ask = ttk.Frame(self.root, padding=(8, 2, 8, 0))
-        ask.pack(fill="x")
+        def regrid(e=None):
+            width = e.width if e else (bar.winfo_width() or self.root.winfo_width())
+            longest = max(len(t) for t, _c, _s in buttons)
+            fit = width // max(110, longest * 7 + 24)
+            cols = 4 if fit >= 4 else 2 if fit >= 2 else 1
+            if cols == self._btn_cols:
+                return
+            self._btn_cols = cols
+            for i, b in enumerate(self._btns):
+                b.grid(row=i // cols, column=i % cols, padx=3, pady=3, sticky="ew")
+            for col in range(4):
+                bar.columnconfigure(col, weight=1 if col < cols else 0, uniform="b" if col < cols else "")
+        bar.bind("<Configure>", regrid)
+        regrid()
+
+        # ---- status pill
+        st = ttk.Frame(root, style="Card.TFrame", padding=(12, 6) if c else (14, 8))
+        st.pack(fill="x", pady=(gap, 0))
+        self.status_dot = tk.Canvas(st, width=10, height=10, bg=SURFACE, highlightthickness=0)
+        self.status_dot.pack(side="left", padx=(0, 8))
+        self._dot = self.status_dot.create_oval(1, 1, 9, 9, fill=MUTED, width=0)
+        self.status_var = tk.StringVar(value="Select a bot and press Start bot.")
+        self.status_label = ttk.Label(st, textvariable=self.status_var, style="Panel.TLabel", wraplength=600)
+        self.status_label.pack(side="left", fill="x", expand=True)
+        st.bind("<Configure>", lambda e: self.status_label.configure(wraplength=max(200, e.width - 50)))
+
+        # ---- message box
+        ask = ttk.Frame(root)
+        ask.pack(fill="x", pady=(gap, 0))
         self.ask_var = tk.StringVar()
         entry = ttk.Entry(ask, textvariable=self.ask_var)
         entry.pack(side="left", fill="x", expand=True)
-        entry.insert(0, "")
         entry.bind("<Return>", lambda e: self.do_tell())
-        ttk.Button(ask, text="Send", command=self.do_tell).pack(side="left", padx=(4, 0))
-        self._ask_hint = ttk.Label(self.root, text="Message your bot during mining or exploring: hi · find iron · build a shelter · "
-                                   "kill that zombie · what does a blaze drop? · stop", foreground=MUTED, padding=(10, 0))
-        self._ask_hint.pack(fill="x")
+        ttk.Button(ask, text="Send", style="Accent.TButton", command=self.do_tell).pack(side="left", padx=(6, 0))
+        self._placeholder(entry, "Tell your bot anything: find iron, build a shelter, get to the End ...")
 
-        # ---- two-way in-app conversation, separate from low-level activity log
-        chatf = ttk.LabelFrame(self.root, text="Bot conversation", padding=(6, 2))
-        chatf.pack(fill="x", padx=6, pady=(2, 4))
-        self.chat = tk.Text(chatf, height=4 if self.compact else 6, wrap="word",
-                            state="disabled", relief="flat", font="TkDefaultFont", padx=8, pady=4)
-        chatsb = ttk.Scrollbar(chatf, orient="vertical", command=self.chat.yview)
-        self.chat.configure(yscrollcommand=chatsb.set)
-        self.chat.pack(side="left", fill="both", expand=True)
-        chatsb.pack(side="right", fill="y")
-        self.model_info = tk.StringVar()
-        ttk.Label(self.root, textvariable=self.model_info, foreground=MUTED,
-                  padding=(8, 2), wraplength=760 if self.compact else 940).pack(fill="x")
+        # ---- conversation + activity, side by side on wide windows, stacked on small ones
+        panes = ttk.Frame(root)
+        panes.pack(fill="both", expand=True, pady=(gap, 0))
+        convo = TextPanel(panes, "Conversation", height=5 if c else 6, compact=c)
+        activity = TextPanel(panes, "Activity", height=6 if c else 6, mono=True, compact=c)
+        self.chat, self.log = convo.text, activity.text
+        self.chat.tag_configure("you", foreground=ACCENT, font=FONT_BOLD)
+        self.chat.tag_configure("bot", foreground=SUCCESS, font=FONT_BOLD)
+        self.chat.tag_configure("time", foreground=MUTED)
+        self.log.configure(fg="#c3c7d0")
+        self._panes = (panes, convo, activity)
+        self._stacked = None
+        panes.bind("<Configure>", self._arrange_panes)
+        self._arrange_panes()
 
-        # ---- status + log + join info
-        self.status_var = tk.StringVar(value="Select a bot and press Start bot.")
-        ttk.Label(self.root, textvariable=self.status_var, padding=(8, 4), foreground=FG,
-                  wraplength=760 if self.compact else 940).pack(fill="x")
-        logf = ttk.Frame(self.root, padding=(6, 0, 6, 0))
-        logf.pack(fill="both", expand=True)
-        self.log = tk.Text(logf, wrap="word", state="disabled", relief="flat", font="TkFixedFont", padx=6, pady=4)
-        sb = ttk.Scrollbar(logf, orient="vertical", command=self.log.yview)
-        self.log.configure(yscrollcommand=sb.set)
-        self.log.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
+        # ---- footer: join address + model files
         self.join_var = tk.StringVar(value="")
-        ttk.Label(self.root, textvariable=self.join_var, padding=(8, 4), foreground=MUTED,
-                  font="TkFixedFont").pack(fill="x")
+        ttk.Label(root, textvariable=self.join_var, style="Muted.TLabel", font="TkFixedFont").pack(
+            fill="x", pady=(gap // 2, 0))
+        self.model_info = tk.StringVar()
+        self.model_label = ttk.Label(root, textvariable=self.model_info, style="Muted.TLabel",
+                                     font=("DejaVu Sans", 8), wraplength=900)
+        self.model_label.pack(fill="x")
+        root.bind("<Configure>", lambda e: self.model_label.configure(wraplength=max(200, e.width - 20)), add="+")
+
+    def _arrange_panes(self, _e=None):
+        panes, convo, activity = self._panes
+        width = panes.winfo_width() or self.root.winfo_width()
+        stacked = width < 760
+        if stacked == self._stacked:
+            return
+        self._stacked = stacked
+        convo.grid_forget()
+        activity.grid_forget()
+        for i in range(2):
+            panes.columnconfigure(i, weight=0, uniform="")
+            panes.rowconfigure(i, weight=0)
+        if stacked:
+            convo.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+            activity.grid(row=1, column=0, sticky="nsew")
+            panes.columnconfigure(0, weight=1)
+            panes.rowconfigure(0, weight=1)
+            panes.rowconfigure(1, weight=1)
+        else:
+            convo.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+            activity.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+            panes.columnconfigure(0, weight=1, uniform="p")
+            panes.columnconfigure(1, weight=1, uniform="p")
+            panes.rowconfigure(0, weight=1)
+
+    def _placeholder(self, entry, text):
+        var = entry.cget("textvariable")
+        state = {"on": False}
+
+        def show(_e=None):
+            if not entry.get():
+                entry.insert(0, text)
+                entry.configure(foreground=MUTED)
+                state["on"] = True
+
+        def hide(_e=None):
+            if state["on"]:
+                entry.delete(0, "end")
+                entry.configure(foreground=FG)
+                state["on"] = False
+        entry.bind("<FocusIn>", hide, add="+")
+        entry.bind("<FocusOut>", show, add="+")
+        self._ph = state
+        show()
+        del var
 
     # ================================================================== hero cards
     def _rebuild_cards(self):
@@ -196,32 +321,38 @@ class App:
             w.destroy()
         self._cards.clear()
         big = not self.compact
+        av_size = 40 if big else 32
         for i, name in enumerate(self.rt.profiles()):
-            card = ttk.Frame(self.cards_row, style="Sel.TFrame" if name == self.rt.current else "Card.TFrame",
-                             padding=8)
-            card.pack(side="left", padx=4, fill="y")
-            av = tk.Canvas(card, width=48 if big else 36, height=48 if big else 36, highlightthickness=0,
-                           bg=CARD_COLORS[i % len(CARD_COLORS)])
-            av.create_text((24 if big else 18), (24 if big else 18), text=name[:1].upper(), fill="white",
-                           font=("TkDefaultFont", 18 if big else 14, "bold"))
-            av.pack(side="left", padx=(0, 8))
-            info = ttk.Frame(card, style=card.cget("style"))
+            sel = name == self.rt.current
+            bg = SELECTED if sel else SURFACE
+            card = ttk.Frame(self.cards_row, style="Sel.TFrame" if sel else "Card.TFrame",
+                             padding=(10, 8) if big else (8, 6), cursor="hand2")
+            card.pack(side="left", padx=(0, 8), fill="y")
+            av = tk.Canvas(card, width=av_size, height=av_size, highlightthickness=0, bg=bg, cursor="hand2")
+            col = CARD_COLORS[i % len(CARD_COLORS)]
+            av.create_oval(1, 1, av_size - 1, av_size - 1, fill=col, outline="")
+            av.create_text(av_size // 2, av_size // 2, text=name[:1].upper(), fill="white",
+                           font=("DejaVu Sans", 15 if big else 12, "bold"))
+            av.pack(side="left", padx=(0, 10))
+            info = tk.Frame(card, bg=bg, cursor="hand2")
             info.pack(side="left")
-            ttk.Label(info, text=name, font=("TkDefaultFont", 11, "bold"), background=card_bg(card)).pack(anchor="w")
+            title = tk.Label(info, text=name, bg=bg, fg=FG, font=FONT_BOLD, cursor="hand2")
+            title.pack(anchor="w")
             st = tk.StringVar(value="offline")
-            ttk.Label(info, textvariable=st, foreground=MUTED, background=card_bg(card)).pack(anchor="w")
-            hp = tk.Canvas(info, width=110, height=6, highlightthickness=0, bg="#3a3c41")
+            sub = tk.Label(info, textvariable=st, bg=bg, fg=MUTED, font=("DejaVu Sans", 8), cursor="hand2")
+            sub.pack(anchor="w")
+            hp = tk.Canvas(info, width=110, height=6, highlightthickness=0, bg=bg)
             hp.pack(anchor="w", pady=(4, 0))
-            bar = hp.create_rectangle(0, 0, 0, 6, fill="#e5484d", width=0)
-            self._cards[name] = {"frame": card, "status": st, "hp": hp, "bar": bar}
-            for w in (card, av, info, *info.winfo_children()):
+            _rounded(hp, 0, 0, 110, 6, 3, fill="#2c2f37", outline="")
+            bar = _rounded(hp, 0, 0, 0, 6, 3, fill=DANGER, outline="")
+            self._cards[name] = {"frame": card, "status": st, "hp": hp, "bar": bar, "hpw": -1}
+            for w in (card, av, info, title, sub, hp):
                 w.bind("<Button-1>", lambda e, n=name: self.select(n))
         if len(self.rt.profiles()) < 5:
-            add = ttk.Frame(self.cards_row, style="Card.TFrame", padding=8)
-            add.pack(side="left", padx=4, fill="y")
-            lbl = ttk.Label(add, text="+\nNew bot", justify="center", foreground=ACCENT, background=PANEL,
-                            font=("TkDefaultFont", 11, "bold"))
-            lbl.pack(expand=True, padx=14)
+            add = ttk.Frame(self.cards_row, style="Card.TFrame", padding=(14, 8), cursor="hand2")
+            add.pack(side="left", fill="y")
+            lbl = tk.Label(add, text="＋  New bot", fg=ACCENT, bg=SURFACE, font=FONT_BOLD, cursor="hand2")
+            lbl.pack(expand=True)
             for w in (add, lbl):
                 w.bind("<Button-1>", lambda e: self.add_bot())
 
@@ -275,6 +406,8 @@ class App:
         self._bg("Start bot", go)
 
     def do_tell(self):
+        if getattr(self, "_ph", {}).get("on"):
+            return
         text = self.ask_var.get().strip()
         if not text:
             return
@@ -459,7 +592,13 @@ class App:
                 text = "offline"
             c["status"].set(text)
             hp = (b.health / 20) if b and b.spawned.is_set() else 0
-            c["hp"].coords(c["bar"], 0, 0, int(110 * max(0, min(1, hp))), 6)
+            w = int(110 * max(0, min(1, hp)))
+            if w != c["hpw"]:
+                if c["bar"]:
+                    c["hp"].delete(c["bar"])
+                col = SUCCESS if hp > .6 else "#f5a524" if hp > .3 else DANGER
+                c["bar"] = _rounded(c["hp"], 0, 0, max(w, 6), 6, 3, fill=col, outline="") if w else None
+                c["hpw"] = w
         s = rt.sessions.get(rt.current)
         b = s.bot if s else None
         parts = [f"{rt.current}"]
@@ -484,7 +623,10 @@ class App:
             parts.append(self.update_notice)
         if rt.server and rt.server.port_notice:
             parts.append(rt.server.port_notice)
-        self.status_var.set("   |   ".join(parts))
+        self.status_var.set("   ·   ".join(parts))
+        online = bool(b and b.spawned.is_set())
+        self.status_dot.itemconfigure(self._dot, fill=SUCCESS if online else "#f5a524" if (b and b.connected)
+                                      else MUTED)
         if s and s.agent:
             h = s.agent.history
             if len(h) != self._hist_seen:
@@ -502,8 +644,9 @@ class App:
                 recent = messages[self._chat_seen:] if self._chat_seen <= len(messages) else messages[-80:]
                 self.chat.configure(state="normal")
                 for stamp, sender, msg in recent:
-                    self.chat.insert("end", time.strftime("%H:%M", time.localtime(stamp)) +
-                                     "  " + str(sender) + ": " + str(msg) + "\n")
+                    self.chat.insert("end", time.strftime("%H:%M ", time.localtime(stamp)), "time")
+                    self.chat.insert("end", str(sender), "you" if sender == "You" else "bot")
+                    self.chat.insert("end", "  " + str(msg) + "\n")
                 line_count = int(self.chat.index("end-1c").split(".")[0])
                 if line_count > 450:
                     self.chat.delete("1.0", f"{line_count - 450}.0")
@@ -536,10 +679,6 @@ class App:
 
     def run(self):
         self.root.mainloop()
-
-
-def card_bg(frame) -> str:
-    return "#35373d" if frame.cget("style") == "Sel.TFrame" else PANEL
 
 
 class SettingsDialog:
@@ -575,17 +714,19 @@ class SettingsDialog:
         ttk.Label(frm, text="AI provider").grid(row=0, column=0, sticky="w", pady=2)
         self.provider = tk.StringVar(value=cfg.get("llm.provider") or "custom")
         box = ttk.Combobox(frm, textvariable=self.provider, values=list(PROVIDERS), state="readonly",
-                           width=24 if app.compact else 46)
-        box.grid(row=0, column=1, pady=2, sticky="w")
+                           width=18)
+        box.grid(row=0, column=1, pady=3, sticky="ew")
+        frm.columnconfigure(1, weight=1)
         self.hint = tk.StringVar()
         ttk.Label(frm, textvariable=self.hint, foreground=MUTED, wraplength=520 if app.compact else 700).grid(
             row=1, column=0, columnspan=2, sticky="w")
         box.bind("<<ComboboxSelected>>", lambda e: self._provider_changed(reset=True))
         for i, (key, label) in enumerate(self.FIELDS, start=2):
-            ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=2)
+            ttk.Label(frm, text=label, wraplength=220 if app.compact else 300).grid(
+                row=i, column=0, sticky="w", pady=3, padx=(0, 10))
             v = tk.StringVar(value=str(cfg.get(key, "")))
-            ttk.Entry(frm, textvariable=v, width=26 if app.compact else 48,
-                      show="*" if "api_key" in key else "").grid(row=i, column=1, pady=2, sticky="w")
+            ttk.Entry(frm, textvariable=v, width=18,
+                      show="*" if "api_key" in key else "").grid(row=i, column=1, pady=3, sticky="ew")
             self.vars[key] = v
         self._provider_changed(reset=False)
         n = len(self.FIELDS) + 2
