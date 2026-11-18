@@ -246,7 +246,7 @@ class Runtime:
         if self.llm is None:
             self.llm = LLM(self.cfg["llm"])
         if s.agent is None:
-            s.agent = Agent(s.bot, self.cfg, s.brain, self.wiki, self.llm, self.server)
+            s.agent = Agent(s.bot, self.cfg, s.brain, self.wiki, self.llm_for(s.name), self.server)
         s.agent.start()
         self.status = f"{s.name}: agent running"
         return s.agent
@@ -279,9 +279,32 @@ class Runtime:
                 self.start_agent(n)
             time.sleep(3)
 
+    def llm_for(self, name: str):
+        """Bots without their own AI share the default one; a bot with its own provider gets its own LLM."""
+        from .agent.llm import LLM, bot_llm_config
+        override = (self.cfg.get("bot_ai") or {}).get(name)
+        if not override or not override.get("provider"):
+            return self.llm
+        self._bot_llms = getattr(self, "_bot_llms", {})
+        cfg = bot_llm_config(self.cfg["llm"], override)
+        if name in self._bot_llms:
+            self._bot_llms[name].reconfigure(cfg)
+        else:
+            self._bot_llms[name] = LLM(cfg)
+        return self._bot_llms[name]
+
     def reload_llm(self):
+        from .agent.llm import bot_llm_config
         if self.llm:
             self.llm.reconfigure(self.cfg["llm"])   # agents share this object, so they switch immediately
+        for name, s in self.sessions.items():
+            if not s.agent:
+                continue
+            want = self.llm_for(name)
+            if s.agent.llm is not want:            # bot switched between default and its own AI
+                s.agent.llm = want
+            elif want is not self.llm:
+                want.reconfigure(bot_llm_config(self.cfg["llm"], self.cfg["bot_ai"].get(name)))
 
     def shutdown(self):
         self.status = "shutting down"

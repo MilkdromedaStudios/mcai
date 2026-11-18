@@ -33,6 +33,7 @@ DEFAULTS: dict = {
         "upnp": False,               # opt-in: ask your home router to forward the port automatically (UPnP)              # op the bot on the local server (needed for /locate when allow_cheats)
         "extra_properties": {},
     },
+    "bot_ai": {},                    # per-bot AI: {"Gemini": {"provider": "gemini", "model": ""}} (empty = default)
     "profiles": ["PyBot"],          # up to 5 bot names that can join the same server
     "bot": {
         "username": "PyBot",
@@ -55,6 +56,7 @@ DEFAULTS: dict = {
             "logic": "openai/gpt-oss-120b",
             "fallback": "qwen/qwen3.8-27b",
         },
+        "keys": {},                  # saved API key per provider, e.g. {"groq": "...", "gemini": "..."}
         "backup_models": [],
         "wait_when_rate_limited": True,  # every model rate-limited -> wait and retry instead of failing         # extra models to try if the main one fails (404 / no access / rate limit)
         "tool_mode": "auto",         # auto | native | json
@@ -113,6 +115,10 @@ class Config:
                 self.data = _merge(DEFAULTS, json.loads(self.path.read_text()))
             except (OSError, ValueError) as e:
                 print(f"[config] could not read {self.path}: {e}; using defaults")
+        # one key per provider: keep the key that was entered before this existed
+        llm = self.data["llm"]
+        if llm.get("api_key") and not llm.get("keys"):
+            llm["keys"] = {(llm.get("provider") or "custom").lower(): llm["api_key"]}
         # environment overrides (handy for systemd / quick tests)
         env = os.environ
         if env.get("PYFLAYER_LLM_BASE_URL"):

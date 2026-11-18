@@ -64,7 +64,10 @@ def resolve(cfg: dict) -> dict:
     import os
     prov = PROVIDERS.get((cfg.get("provider") or "custom").lower(), PROVIDERS["custom"])
     base = cfg.get("base_url") or prov["base_url"]
-    key = cfg.get("api_key") or (os.environ.get(prov["key_env"], "") if prov.get("key_env") else "")
+    name = (cfg.get("provider") or "custom").lower()
+    # each provider keeps its own key (llm.keys), so switching provider never loses another provider's key
+    key = (cfg.get("keys") or {}).get(name) or cfg.get("api_key") or \
+        (os.environ.get(prov["key_env"], "") if prov.get("key_env") else "")
     model = cfg.get("model") or prov["model"]
     return {"base_url": base, "api_key": key, "model": model, "headers": prov.get("headers", {}),
             "local": prov.get("local", False)}
@@ -222,7 +225,7 @@ class LLM:
         free-tier-friendly defaults, and finally anything the key is allowed to use."""
         prov = (self.cfg.get("provider") or "custom").lower()
         order = [first, *(self.cfg.get("backup_models") or []), *BACKUP_MODELS.get(prov, []),
-                 *(self.cfg.get("models") or {}).values(), self.model]     # strongest free backups first
+                 *((self.cfg.get("models") or {}).values() if prov == "groq" else ()), self.model]     # strongest free backups first
         now = time.time()
         chain = []
         for m in order:
@@ -393,3 +396,16 @@ class LLM:
                         return ToolCall(f"json_{int(time.time() * 1000)}", str(name), args if isinstance(args, dict) else {})
                     return None
         return None
+
+
+def bot_llm_config(llm_cfg: dict, override: dict | None) -> dict:
+    """The AI settings one bot uses: the default ones, or its own provider / model / URL if it has them."""
+    cfg = dict(llm_cfg)
+    if not override or not override.get("provider"):
+        return cfg
+    prov = override["provider"].lower()
+    cfg["provider"] = prov
+    cfg["model"] = override.get("model", "")
+    cfg["base_url"] = override.get("base_url", "")
+    cfg["api_key"] = (llm_cfg.get("keys") or {}).get(prov, "")     # never send one provider's key to another
+    return cfg

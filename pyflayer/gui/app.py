@@ -818,8 +818,32 @@ class SettingsDialog:
             ttk.Entry(frm, textvariable=v, width=18,
                       show="*" if "api_key" in key else "").grid(row=i, column=1, pady=3, sticky="ew")
             self.vars[key] = v
+        # every provider keeps its own key: switching provider shows that provider's saved key
+        self.keys = dict(cfg.get("llm.keys") or {})
+        self._shown_provider = self.provider.get()
+        self.vars["llm.api_key"].set(self.keys.get(self._shown_provider, cfg.get("llm.api_key") or ""))
         self._provider_changed(reset=False)
         n = len(self.FIELDS) + 2
+        # ---- AI for the selected bot (so e.g. bot "Gemini" uses Gemini and bot "Groq" uses Groq)
+        bot = app.rt.current
+        ov = (cfg.get("bot_ai") or {}).get(bot) or {}
+        ttk.Separator(frm).grid(row=n, column=0, columnspan=2, sticky="ew", pady=(10, 6))
+        ttk.Label(frm, text=f"AI for bot {bot}", font=FONT_BOLD).grid(row=n + 1, column=0, sticky="w")
+        ttk.Label(frm, text="'default' = the provider above. Pick another to give this bot its own AI "
+                            "(its key is the one saved for that provider).", style="Muted.TLabel",
+                  wraplength=520 if app.compact else 700).grid(row=n + 2, column=0, columnspan=2, sticky="w")
+        self.bot_provider = tk.StringVar(value=ov.get("provider") or "default")
+        ttk.Label(frm, text="Provider").grid(row=n + 3, column=0, sticky="w", pady=3)
+        ttk.Combobox(frm, textvariable=self.bot_provider, values=["default", *PROVIDERS], state="readonly",
+                     width=18).grid(row=n + 3, column=1, sticky="ew", pady=3)
+        self.bot_model = tk.StringVar(value=ov.get("model", ""))
+        ttk.Label(frm, text="Model (blank = provider default)").grid(row=n + 4, column=0, sticky="w", pady=3)
+        ttk.Entry(frm, textvariable=self.bot_model, width=18).grid(row=n + 4, column=1, sticky="ew", pady=3)
+        self.bot_url = tk.StringVar(value=ov.get("base_url", ""))
+        ttk.Label(frm, text="Base URL (custom / local only)").grid(row=n + 5, column=0, sticky="w", pady=3)
+        ttk.Entry(frm, textvariable=self.bot_url, width=18).grid(row=n + 5, column=1, sticky="ew", pady=3)
+        self._bot_name = bot
+        n += 6
         self.test_var = tk.StringVar()
         ttk.Label(frm, textvariable=self.test_var, wraplength=520).grid(row=n, column=0, columnspan=2, sticky="w")
         btns = ttk.Frame(frm)
@@ -831,6 +855,13 @@ class SettingsDialog:
     def _provider_changed(self, reset: bool):
         from ..agent.llm import PROVIDERS
         p = PROVIDERS.get(self.provider.get(), PROVIDERS["custom"])
+        if hasattr(self, "keys"):
+            # remember the key typed for the old provider, show the saved key of the new one
+            typed = self.vars["llm.api_key"].get().strip()
+            if typed:
+                self.keys[self._shown_provider] = typed
+            self._shown_provider = self.provider.get()
+            self.vars["llm.api_key"].set(self.keys.get(self._shown_provider, ""))
         if reset:
             self.vars["llm.base_url"].set("")
             self.vars["llm.model"].set("")
@@ -885,12 +916,39 @@ class SettingsDialog:
         cfg["provider"] = self.provider.get()
         for k in ("llm.api_key", "llm.model", "llm.base_url"):
             cfg[k.split(".")[1]] = self.vars[k].get().strip()
+        keys = dict(self.keys)
+        if cfg["api_key"]:
+            keys[cfg["provider"]] = cfg["api_key"]
+        cfg["keys"] = keys
+        bot_p = self.bot_provider.get()
         self.test_var.set("testing...")
-        threading.Thread(target=lambda: self.test_var.set(LLM(cfg).test()), daemon=True).start()
+
+        def run():
+            from ..agent.llm import bot_llm_config
+            out = "default AI: " + LLM(cfg).test()
+            if bot_p not in ("", "default"):
+                bcfg = bot_llm_config(cfg, {"provider": bot_p, "model": self.bot_model.get().strip(),
+                                            "base_url": self.bot_url.get().strip()})
+                out += f"\n{self._bot_name}'s AI ({bot_p}): " + LLM(bcfg).test()
+            self.app.root.after(0, lambda: self.test_var.set(out))
+        threading.Thread(target=run, daemon=True).start()
 
     def save(self):
         cfg = self.app.cfg
         cfg.set("llm.provider", self.provider.get())
+        typed = self.vars["llm.api_key"].get().strip()
+        if typed:
+            self.keys[self.provider.get()] = typed
+        else:
+            self.keys.pop(self.provider.get(), None)
+        cfg.set("llm.keys", self.keys)
+        bot_ai = dict(cfg.get("bot_ai") or {})
+        if self.bot_provider.get() in ("", "default"):
+            bot_ai.pop(self._bot_name, None)
+        else:
+            bot_ai[self._bot_name] = {"provider": self.bot_provider.get(), "model": self.bot_model.get().strip(),
+                                      "base_url": self.bot_url.get().strip()}
+        cfg.set("bot_ai", bot_ai)
         for key, v in self.vars.items():
             old = cfg.get(key)
             val = v.get().strip()
