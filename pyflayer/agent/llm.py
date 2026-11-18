@@ -107,6 +107,7 @@ class LLM:
         self.cfg = cfg
         self.mode = cfg.get("tool_mode", "auto")
         self.client = None
+        self._logic_fallback_until = 0.0
         self._maybe_client()
 
     def test(self) -> str:
