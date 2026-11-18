@@ -14,6 +14,7 @@ from __future__ import annotations
 import gzip
 import json
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -89,6 +90,7 @@ class Brain:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.lock = threading.RLock()
+        self.export_lock = threading.Lock()
         self.db.executescript(SCHEMA)
         try:
             self.db.executescript(FTS)
@@ -373,50 +375,96 @@ class Brain:
         return {name: self.drill(name) for name in names}
 
     # ------------------------------------------------------------------ portable model file
+    def export_latest(self) -> Path:
+        """Export a reusable, current model beside this bot's live brain database."""
+        return self.export(self.path.with_name(self.path.stem + "-export.json.gz"))
+
     def export(self, path: Path) -> Path:
-        with self.lock:
-            data = {
-                "format": "pyflayer-brain-1", "exported": time.time(),
-                "facts": self.db.execute("SELECT topic, text, confidence, source FROM facts").fetchall(),
-                "skills": [self.skill(r[0]) for r in self.db.execute("SELECT name FROM skills").fetchall()],
-                "waypoints": self.db.execute("SELECT * FROM waypoints").fetchall(),
-                "hardness": self.db.execute("SELECT block, value, samples FROM hardness").fetchall(),
-                "stats": self.db.execute("SELECT key, value FROM stats").fetchall(),
-                "milestones": self.db.execute("SELECT * FROM milestones").fetchall(),
-                "skill_drills": self.db.execute("SELECT * FROM skill_drills").fetchall(),
-                "seen": self.db.execute("SELECT kind, name, first, count FROM seen").fetchall(),
-                "knowledge": self.db.execute("SELECT name, kind, text, source FROM knowledge").fetchall(),
-            }
+        """Atomically save learned memory, skill code, practice scores and game facts."""
         path = Path(path)
-        with gzip.open(path, "wt", encoding="utf-8") as f:
-            json.dump(data, f)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self.export_lock:
+            with self.lock:
+                data = {
+                    "format": "pyflayer-brain-2", "exported": time.time(),
+                    "facts": self.db.execute("SELECT topic,text,confidence,source FROM facts").fetchall(),
+                    "episodes": list(reversed(self.db.execute(
+                        "SELECT ts,kind,text,importance FROM episodes ORDER BY id DESC LIMIT 10000").fetchall())),
+                    "skills": [self.skill(row[0]) for row in self.db.execute(
+                        "SELECT name FROM skills").fetchall()],
+                    "waypoints": self.db.execute("SELECT * FROM waypoints").fetchall(),
+                    "hardness": self.db.execute("SELECT block,value,samples FROM hardness").fetchall(),
+                    "stats": self.db.execute("SELECT key,value FROM stats").fetchall(),
+                    "milestones": self.db.execute("SELECT * FROM milestones").fetchall(),
+                    "skill_drills": self.db.execute("SELECT * FROM skill_drills").fetchall(),
+                    "seen": self.db.execute("SELECT kind,name,first,count FROM seen").fetchall(),
+                    "knowledge": self.db.execute("SELECT name,kind,text,source FROM knowledge").fetchall(),
+                }
+            tmp = path.with_name(path.name + ".part")
+            try:
+                with gzip.open(tmp, "wt", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False)
+                os.replace(tmp, path)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
         return path
 
     def import_(self, path: Path):
         with gzip.open(path, "rt", encoding="utf-8") as f:
             data = json.load(f)
-        for t, x, c, s in data.get("facts", []):
-            self.remember(x, t, c, s)
+        if data.get("format") not in ("pyflayer-brain-1", "pyflayer-brain-2"):
+            raise ValueError("Unsupported PyFlayer model backup")
+        for topic, content, confidence, source in data.get("facts", []):
+            self.remember(content, topic, confidence, source)
         for sk in data.get("skills", []):
-            if sk:
-                self.save_skill(sk["name"], sk["description"], sk["steps"], sk.get("params"))
+            if not sk:
+                continue
+            name = self.save_skill(sk["name"], sk["description"], sk["steps"], sk.get("params"))
+            with self.lock:
+                self.db.execute(
+                    "UPDATE skills SET successes=MAX(successes,?), failures=MAX(failures,?), "
+                    "last_used=MAX(COALESCE(last_used,0),?), "
+                    "avg_seconds=CASE WHEN successes <= ? THEN ? ELSE avg_seconds END WHERE name=?",
+                    (sk.get("successes", 0), sk.get("failures", 0),
+                     sk.get("last_used") or 0.0, sk.get("successes", 0),
+                     sk.get("avg_seconds") or 0.0, name))
+                self.db.commit()
         with self.lock:
+            known = set(self.db.execute("SELECT ts,kind,text FROM episodes").fetchall())
+            for ts, kind, content, importance in data.get("episodes", []):
+                key = (ts, kind, content)
+                if key not in known:
+                    self.db.execute(
+                        "INSERT INTO episodes(ts,session,kind,text,importance) VALUES (?,?,?,?,?)",
+                        (ts, None, kind, content, importance))
+                    known.add(key)
             for row in data.get("waypoints", []):
                 self.db.execute("INSERT OR REPLACE INTO waypoints VALUES (?,?,?,?,?,?,?,?)", row)
-            for b, v, n in data.get("hardness", []):
-                self.db.execute("INSERT OR REPLACE INTO hardness VALUES (?,?,?)", (b, v, n))
+            for block, value, samples in data.get("hardness", []):
+                self.db.execute(
+                    "INSERT OR REPLACE INTO hardness VALUES (?,?,?)", (block, value, samples))
+            for key, value in data.get("stats", []):
+                self.db.execute(
+                    "INSERT INTO stats(key,value) VALUES (?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=MAX(stats.value, excluded.value)",
+                    (key, value))
             for row in data.get("milestones", []):
                 self.db.execute("INSERT OR IGNORE INTO milestones VALUES (?,?,?,?,?)", row)
             for row in data.get("skill_drills", []):
                 self.db.execute(
-                    "INSERT OR REPLACE INTO skill_drills "
-                    "(name, attempts, successes, last_result, last_practiced) VALUES (?,?,?,?,?)",
-                    row)
+                    "INSERT INTO skill_drills(name,attempts,successes,last_result,last_practiced) "
+                    "VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET "
+                    "attempts=MAX(skill_drills.attempts,excluded.attempts), "
+                    "successes=MAX(skill_drills.successes,excluded.successes), "
+                    "last_result=CASE WHEN excluded.last_practiced >= skill_drills.last_practiced "
+                    "THEN excluded.last_result ELSE skill_drills.last_result END, "
+                    "last_practiced=MAX(skill_drills.last_practiced,excluded.last_practiced)", row)
             for row in data.get("seen", []):
                 self.db.execute("INSERT OR IGNORE INTO seen VALUES (?,?,?,?)", row)
             self.db.commit()
-        for n, k, t, s in data.get("knowledge", []):
-            self.set_knowledge(n, k, t, s)
+        for name, kind, content, source in data.get("knowledge", []):
+            self.set_knowledge(name, kind, content, source)
         self.commit()
 
     def overview(self) -> dict:
