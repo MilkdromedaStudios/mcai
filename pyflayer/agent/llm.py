@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 
 log = logging.getLogger("pyflayer.llm")
@@ -43,7 +44,7 @@ PROVIDERS = {
     "anthropic":  {"base_url": "https://api.anthropic.com/v1/", "model": "claude-sonnet-5-5", "key_env": "ANTHROPIC_API_KEY"},
     "gemini":     {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "model": "gemini-2.5-flash",
                    "key_env": "GEMINI_API_KEY"},
-    "groq":       {"base_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile", "key_env": "GROQ_API_KEY"},
+    "groq":       {"base_url": "https://api.groq.com/openai/v1", "model": "llama-3.1-8b-instant", "key_env": "GROQ_API_KEY"},
     "deepseek":   {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat", "key_env": "DEEPSEEK_API_KEY"},
     "mistral":    {"base_url": "https://api.mistral.ai/v1", "model": "mistral-small-latest", "key_env": "MISTRAL_API_KEY"},
     "together":   {"base_url": "https://api.together.xyz/v1", "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
@@ -80,6 +81,7 @@ class LLM:
         self.calls = 0
         self.tokens = 0
         self.last_error = ""
+        self._logic_fallback_until = 0.0
         self._maybe_client()
 
     def _maybe_client(self):
@@ -113,22 +115,40 @@ class LLM:
             return "not configured: choose a provider and enter an API key (or a base URL for custom/local)"
         try:
             t = time.time()
-            r = self.chat([{"role": "user", "content": "Reply with the single word: ready"}], None, 0.0, 10)
+            r = self.chat([{"role": "user", "content": "Reply with the single word: ready"}], None, 0.0, 10, model_role="chat")
             return f"OK ({time.time() - t:.1f}s, model {self.model}): {r.content.strip()[:60]!r}"
         except Exception as e:  # noqa: BLE001
             return f"FAILED ({self.model} @ {resolve(self.cfg)['base_url']}): {e}"
 
     # ------------------------------------------------------------------ chat
+    def model_for(self, role: str = "logic") -> str:
+        """Return the configured Groq specialist model, or the normal provider model."""
+        if (self.cfg.get("provider") or "").lower() != "groq":
+            return self.model
+        defaults = {"chat": "llama-3.1-8b-instant",
+                    "world": "meta-llama/llama-4-scout-17b-16e-instruct",
+                    "logic": "openai/gpt-oss-120b", "fallback": "qwen/qwen3.8-27b"}
+        models = self.cfg.get("models") or {}
+        role = role if role in defaults else "logic"
+        if role == "logic" and time.time() < self._logic_fallback_until:
+            role = "fallback"
+        return str(models.get(role) or defaults[role])
+
+    def _next_utc_midnight(self) -> float:
+        now = datetime.now(timezone.utc)
+        return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
     def chat(self, messages: list[dict], tools: list[dict] | None = None, temperature: float | None = None,
-             max_tokens: int | None = None) -> LLMReply:
+             max_tokens: int | None = None, model_role: str = "logic") -> LLMReply:
         if not self.client:
             raise LLMNotConfigured("AI not configured: set llm.provider (openai, openrouter, ...) and llm.api_key, "
                                    "or llm.base_url for a custom endpoint")
         temperature = self.cfg.get("temperature", 0.3) if temperature is None else temperature
         max_tokens = max_tokens or self.cfg.get("max_tokens", 900)
+        model = self.model_for(model_role)
         if tools and self.mode in ("auto", "native"):
             try:
-                return self._native(messages, tools, temperature, max_tokens)
+                return self._native(messages, tools, temperature, max_tokens, model)
             except Exception as e:  # noqa: BLE001
                 msg = str(e).lower()
                 if self.mode == "auto" and any(k in msg for k in ("tool", "function", "not supported", "400",
@@ -139,12 +159,25 @@ class LLM:
                     self.last_error = str(e)
                     raise
         if tools:
-            return self._json_mode(messages, tools, temperature, max_tokens)
-        return self._plain(messages, temperature, max_tokens)
+            return self._json_mode(messages, tools, temperature, max_tokens, model)
+        return self._plain(messages, temperature, max_tokens, model)
 
-    def _create(self, **kw):
+    def _create(self, model=None, **kw):
         t = time.time()
-        r = self.client.chat.completions.create(model=self.model, **kw)
+        selected = model or self.model
+        try:
+            r = self.client.chat.completions.create(model=selected, **kw)
+        except Exception as exc:
+            status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+            logic_model = str((self.cfg.get("models") or {}).get("logic") or "openai/gpt-oss-120b")
+            if (self.cfg.get("provider") or "").lower() == "groq" and selected == logic_model and status == 429:
+                self._logic_fallback_until = self._next_utc_midnight()
+                fallback = str((self.cfg.get("models") or {}).get("fallback") or "qwen/qwen3.8-27b")
+                log.warning("Groq logic model rate-limited; switching to %s until UTC midnight", fallback)
+                r = self.client.chat.completions.create(model=fallback, **kw)
+            else:
+                self.last_error = str(exc)
+                raise
         self.calls += 1
         try:
             self.tokens += r.usage.total_tokens
@@ -153,12 +186,12 @@ class LLM:
         log.debug("llm call %.1fs", time.time() - t)
         return r
 
-    def _plain(self, messages, temperature, max_tokens) -> LLMReply:
-        r = self._create(messages=messages, temperature=temperature, max_tokens=max_tokens)
+    def _plain(self, messages, temperature, max_tokens, model) -> LLMReply:
+        r = self._create(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
         return LLMReply(content=r.choices[0].message.content or "", raw=r)
 
-    def _native(self, messages, tools, temperature, max_tokens) -> LLMReply:
-        r = self._create(messages=messages, tools=tools, tool_choice="auto", temperature=temperature,
+    def _native(self, messages, tools, temperature, max_tokens, model) -> LLMReply:
+        r = self._create(model=model, messages=messages, tools=tools, tool_choice="auto", temperature=temperature,
                          max_tokens=max_tokens)
         m = r.choices[0].message
         calls = []
@@ -175,7 +208,7 @@ class LLM:
                 calls.append(parsed)
         return LLMReply(content=m.content or "", tool_calls=calls, raw=r)
 
-    def _json_mode(self, messages, tools, temperature, max_tokens) -> LLMReply:
+    def _json_mode(self, messages, tools, temperature, max_tokens, model) -> LLMReply:
         desc = "\n".join(f"- {t['function']['name']}: {t['function']['description']} | "
                          f"{json.dumps(t['function']['parameters'].get('properties', {}))}" for t in tools)
         sys_extra = JSON_TOOL_INSTRUCTIONS + desc
@@ -193,7 +226,7 @@ class LLM:
             msgs[0] = {"role": "system", "content": msgs[0]["content"] + "\n" + sys_extra}
         else:
             msgs.insert(0, {"role": "system", "content": sys_extra})
-        r = self._create(messages=msgs, temperature=temperature, max_tokens=max_tokens)
+        r = self._create(model=model, messages=msgs, temperature=temperature, max_tokens=max_tokens)
         content = r.choices[0].message.content or ""
         call = self._parse_json_call(content)
         return LLMReply(content=content, tool_calls=[call] if call else [], raw=r)
