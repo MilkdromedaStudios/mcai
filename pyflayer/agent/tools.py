@@ -483,6 +483,32 @@ class ToolBox:
             self.bot.goto(GoalNear(*w["pos"], 2), timeout=600)
             return f"at waypoint {name}"
 
+        @add("gather_nearest_wood",
+             "Gather any nearby wood, choosing actually loaded species (oak over distant birch).",
+             {"count": I("number of logs, 1-32")})
+        def gather_nearest_wood(count=8):
+            return self.bot.planner.gather_wood(max(1, min(32, int(count))))
+
+        @add("practice_skill",
+             "Practise ONE dry-ground movement/placement/resource skill, record real success or failure. "
+             "Never start a fall/lava stunt to train.",
+             {"name": S("optional: resource_choice, safe_navigation, sprint_jump, controlled_placement")})
+        def practice_skill(name=None):
+            with a._actuation_lock:
+                return a.skill_coach.practice_one(name)
+
+        @add("skill_progress",
+             "Show measured skill training progress and locked advanced maneuvers.")
+        def skill_progress():
+            skills = a.skill_coach.mastery()
+            out = [f"{name}: {p['successes']}/{p['attempts']} verified; "
+                   f"{'CERTIFIED' if p['certified'] else 'training'}"
+                   for name, p in skills.items()]
+            out.append("advanced lava-gap jump: " +
+                       ("unlocked" if a.skill_coach.lava_jump_ready()
+                        else "LOCKED (needs certified dry jumps and placements, explicit opt-in)"))
+            return "\\n".join(out)
+
         # ------------------------------------------------------------ skills
         @add("list_skills", "List learned skills (reusable action programs), optionally matching a query.",
              {"query": S("optional search")})
