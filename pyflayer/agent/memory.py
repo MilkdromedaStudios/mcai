@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS milestones(name TEXT PRIMARY KEY, achieved REAL, seco
     last_error TEXT);
 CREATE TABLE IF NOT EXISTS skill_drills(name TEXT PRIMARY KEY, attempts INTEGER DEFAULT 0,
     successes INTEGER DEFAULT 0, last_result TEXT DEFAULT '', last_practiced REAL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS skill_priors(name TEXT PRIMARY KEY, attempts INTEGER DEFAULT 0,
+    successes INTEGER DEFAULT 0);
 """
 FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(text, content='episodes', content_rowid='id', tokenize='porter unicode61');
@@ -362,11 +364,17 @@ class Brain:
                 "SELECT attempts, successes, last_result, last_practiced FROM skill_drills WHERE name=?",
                 (name,)).fetchone()
         attempts, successes, detail, when = row or (0, 0, "", 0.0)
-        # Only actual successful controlled trials unlock high-risk skills.
+        with self.lock:
+            prior = self.db.execute(
+                "SELECT attempts,successes FROM skill_priors WHERE name=?", (name,)).fetchone()
+        prior_attempts, prior_successes = prior or (0, 0)
+        # Prior performance transfers as advice, not as proof that this world's
+        # lava jump or clutch is safe. Certification uses local verified trials.
         accuracy = successes / attempts if attempts else 0.0
         return {"name": name, "attempts": attempts, "successes": successes,
                 "failures": attempts - successes, "accuracy": round(accuracy, 3),
                 "certified": attempts >= 8 and successes >= 7 and accuracy >= 0.85,
+                "prior_attempts": prior_attempts, "prior_successes": prior_successes,
                 "last_result": detail, "last_practiced": when}
 
     def drills(self) -> dict[str, dict]:
