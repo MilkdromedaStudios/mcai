@@ -226,9 +226,9 @@ class SpecialistTeam:
                 inventory = b.inventory.summary()[:500]
                 summary = self._think(
                     "scout", "Nearby ore observations: " + "; ".join(observations[:12]) +
-                    "\\nInventory: " + inventory +
-                    "\\nStatus: " + a.status_text(short=True) +
-                    "\\nSummarize the useful world-state and inventory implications in 1-2 concise sentences. " +
+                    "\nInventory: " + inventory +
+                    "\nStatus: " + a.status_text(short=True) +
+                    "\nSummarize the useful world-state and inventory implications in 1-2 concise sentences. " +
                     "Do not claim the bot collected anything.", 110
                 )
                 a.board.post("scout", summary[:220] if summary else "; ".join(observations[:8]))
