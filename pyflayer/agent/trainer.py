@@ -71,24 +71,15 @@ def _obtain_any(items, n):
 
 
 def _any_logs(n):
-    """Chop whatever trees are closest (any wood type) instead of hunting for one kind."""
+    """Choose only loaded nearby tree species and verify actual inventory gains."""
     def run(t):
-        bot = t.bot
-        start = sum(bot.inventory.count(i) for i in LOGS)
-        for _ in range(8):
-            have = sum(bot.inventory.count(i) for i in LOGS) - start
-            if have >= n:
-                break
-            if not bot.find_blocks(LOGS, 128, 1):
-                bot.planner.explore_for(LOGS)
-            try:
-                bot.collect_block(LOGS, n - have, radius=128, timeout=300)
-            except ActionError as e:
-                t.note(f"wood: {e}")
-        got = sum(bot.inventory.count(i) for i in LOGS) - start
-        if got <= 0:
-            raise ActionError("found no trees")
-        return f"chopped {got} logs"
+        before = sum(t.bot.inventory.count(i) for i in LOGS)
+        res = t.bot.planner.gather_wood(n, radius=96)
+        after = sum(t.bot.inventory.count(i) for i in LOGS)
+        if after <= before:
+            raise ActionError(f"no wood gathered: {res}")
+        t.note(f"wood selection: {res}; +{after - before} any logs")
+        return res
     return run
 
 
@@ -396,6 +387,12 @@ class Trainer:
                     self.status = f"practising {ms.name}"
                     self.current = ms.name
                     self._attempt(ms, fails)
+                    # One measured dry-ground skill drill after every two
+                    # curriculum attempts. World actions use the same lock.
+                    if self.running and self.completed_attempts and self.completed_attempts % 2 == 0:
+                        self.status = "skill practice"
+                        result = self.agent.skill_coach.practice_one()
+                        self.note(result)
         except Exception as e:  # noqa: BLE001
             log.exception("training loop crashed")
             self.status = "error"
@@ -491,7 +488,7 @@ class Trainer:
         err = ""
         ok = False
         try:
-            if self.agent.llm.configured:
+            if self.agent.llm.configured and ms.name != "wood":
                 goal = ms.goal + " Tip: the obtain_item tool can do most item goals automatically."
                 summary, _ = self.agent.run_task(goal, time_limit=ms.minutes * 60)
                 ok = self._verified(ms)
@@ -552,6 +549,7 @@ class Trainer:
             "status": self.status,
             "current": self.current,
             "last_error": self.last_error,
+            "skills": self.agent.skill_coach.mastery(),
             "completed_attempts": self.completed_attempts,
             "successful_attempts": self.successful_attempts,
             "recent_events": self.events[-20:],
@@ -587,6 +585,11 @@ class Trainer:
         for m in p["milestones"]:
             lines.append(f"| {m['name']} | {'yes' if m['achieved'] else 'no'} | {m['attempts']} | {m['minutes']} | "
                          f"{(m['last_error'] or '')[:80]} |")
+        lines += ["", "## Measured skill practice", ""]
+        for name, stats in p["skills"].items():
+            lines.append(f"- {name}: {stats['successes']}/{stats['attempts']} verified, "
+                         f"{'certified' if stats['certified'] else 'training'}; "
+                         f"last: {stats['last_result'][:100]}")
         lines += ["", "## Knowledge", "",
                   f"- Blocks with full game-data knowledge: {k['blocks_known_gamedata']} / {k['blocks_total']}",
                   f"- Knowledge entries enriched from minecraft.wiki: {k['entries_with_wiki']} "
