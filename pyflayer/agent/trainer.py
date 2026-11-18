@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+from ..bot.actions import ActionError
 
 from ..bot import advanced
 from ..bot.actions import ActionError
@@ -69,6 +70,28 @@ def _obtain_any(items, n):
     return run
 
 
+def _any_logs(n):
+    """Chop whatever trees are closest (any wood type) instead of hunting for one kind."""
+    def run(t):
+        bot = t.bot
+        start = sum(bot.inventory.count(i) for i in LOGS)
+        for _ in range(8):
+            have = sum(bot.inventory.count(i) for i in LOGS) - start
+            if have >= n:
+                break
+            if not bot.find_blocks(LOGS, 128, 1):
+                bot.planner.explore_for(LOGS)
+            try:
+                bot.collect_block(LOGS, n - have, radius=128, timeout=300)
+            except ActionError as e:
+                t.note(f"wood: {e}")
+        got = sum(bot.inventory.count(i) for i in LOGS) - start
+        if got <= 0:
+            raise ActionError("found no trees")
+        return f"chopped {got} logs"
+    return run
+
+
 def _flag(name):
     return lambda t: bool(t.brain.milestones().get(name, {}).get("achieved"))
 
@@ -105,7 +128,7 @@ def _eyes(t):
 def build_curriculum() -> list[Milestone]:
     M = Milestone
     return [
-        M("wood", "Collect at least 8 logs of any wood type.", _has_any(LOGS, 8), _obtain_any(LOGS, 8), 15),
+        M("wood", "Collect at least 8 logs of any wood type.", _has_any(LOGS, 8), _any_logs(8), 15),
         M("crafting_table", "Craft a crafting table and keep it.", _has("crafting_table"), _obtain("crafting_table"), 10),
         M("wooden_pickaxe", "Make a wooden pickaxe.", _has("wooden_pickaxe"), _obtain("wooden_pickaxe"), 10),
         M("stone_pickaxe", "Make a stone pickaxe.", _has("stone_pickaxe"), _obtain("stone_pickaxe"), 15),
