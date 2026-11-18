@@ -651,9 +651,13 @@ class ActionsMixin:
         stall = 0
         limit = 6.0 if st.kind in ("walk", "jump", "swim", "bridge") else 10.0
         straight = all(s.kind == "walk" and not s.dig for s in lookahead) and len(lookahead) >= 2
+        jumped = False
         while True:
             self._wait(1)
             s = self.state
+            if st.kind == "gap_jump" and s.in_lava:
+                c.clear()
+                return False
             dx, dz = tx - s.x, tz - s.z
             hd = math.hypot(dx, dz)
             dy = ty - s.y
@@ -676,8 +680,14 @@ class ActionsMixin:
             s.yaw = math.degrees(math.atan2(-dx, dz))
             s.pitch = 0.0
             c.forward = hd > 0.15
-            c.sprint = straight and hd > 1.0 and not s.in_water and self.food > 6
-            if s.in_water:
+            c.sprint = (straight or st.kind == "gap_jump") and hd > 1.0 and not s.in_water and self.food > 6
+            if st.kind == "gap_jump":
+                # Sprint-jump is only allowed for a validated, previously
+                # mapped, single-cell lava gap with a solid landing pad.
+                c.jump = bool(s.on_ground and not jumped and hd > 1.0)
+                if c.jump:
+                    jumped = True
+            elif s.in_water:
                 c.jump = dy > -0.4 or s.collided_h
             elif st.kind in ("jump",) and dy > 0.4:
                 c.jump = s.on_ground and hd < 1.4
@@ -745,8 +755,18 @@ class ActionsMixin:
         except ActionError:
             self.controls.sneak = False
             return False
+        # Never step onto a claimed bridge until a solid block is visible
+        # there. This is crucial when bridging over lava, where a rejected
+        # placement would otherwise cause a fatal fall.
+        placed = False
+        for _ in range(14):
+            self._wait(1)
+            state = self.world.get(tx, ty, tz)
+            if state is not None and self.gd.has_collision[state]:
+                placed = True
+                break
         self.controls.sneak = False
-        return True
+        return placed
 
     def _center_on(self, bx, bz, timeout_ticks=30):
         for _ in range(timeout_ticks):
