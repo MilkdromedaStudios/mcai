@@ -47,11 +47,52 @@ class Planner:
         return self.bot.inventory.count(item)
 
     def _nearby_block(self, block: str, radius=96):
-        key = (block, radius)
-        if key not in self._near_cache:
-            found = self.bot.find_blocks(block, radius, 1)
-            self._near_cache[key] = found[0] if found else None
-        return self._near_cache[key]
+        # A persistent empty cache made the bot walk past real trees after chunks
+        # loaded. Tie the cache to its current chunk and recheck absent blocks.
+        x, _, z = self.bot.position
+        key = (block, radius, math.floor(x / 16), math.floor(z / 16))
+        cached = self._near_cache.get(key)
+        if cached is not None and time.time() - cached[1] < (8 if cached[0] else 1):
+            return cached[0]
+        found = self.bot.find_blocks(block, radius, 1)
+        pos = found[0] if found else None
+        self._near_cache[key] = (pos, time.time())
+        if len(self._near_cache) > 200:
+            self._near_cache.clear()
+        return pos
+
+    def nearby_wood(self, radius=96) -> list[tuple[str, float]]:
+        """Wood varieties actually loaded in this area, nearest first."""
+        names = ("oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
+                 "dark_oak_log", "mangrove_log", "cherry_log", "pale_oak_log",
+                 "crimson_stem", "warped_stem")
+        found = []
+        for name in names:
+            if name not in self.gd.block_states:
+                continue
+            pos = self._nearby_block(name, radius)
+            if pos is not None:
+                found.append((name, math.dist(pos, self.bot.position)))
+        return sorted(found, key=lambda row: row[1])
+
+    def gather_wood(self, count: int = 8, radius: float = 96) -> str:
+        """Harvest whichever available wood is closest; don't insist on birch/oak."""
+        if count < 1:
+            return "no wood requested"
+        names = [name for name, dist in self.nearby_wood(radius)]
+        if not names:
+            names = ["oak_log", "birch_log", "spruce_log", "jungle_log", "acacia_log",
+                     "dark_oak_log", "mangrove_log", "cherry_log", "pale_oak_log"]
+            self._say("no loaded trees nearby; scouting for any tree type")
+            if not self.explore_for(names, max_legs=3, leg=45):
+                raise ActionError("no reachable trees discovered in local chunks")
+            names = [name for name, _ in self.nearby_wood(radius)]
+        if not names:
+            raise ActionError("trees appeared during scouting but none are reachable now")
+        self._say("nearest available wood: " + ", ".join(names[:4]))
+        # Collect_block searches all these species; picks closest reachable
+        # block on every step, so moving to birch doesn't trump nearby oak.
+        return self.bot.collect_block(names, count, radius=radius, timeout=360)
 
     def required_tool(self, block: str) -> tuple[str | None, str | None]:
         """(tool kind, minimum tier) needed to harvest a block's drops."""
