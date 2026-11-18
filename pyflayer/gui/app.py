@@ -139,6 +139,7 @@ class App:
         buttons = [("Start bot", self.do_start, "Accent.TButton"), ("Stop", self.do_stop, "TButton"),
                    ("Server", self.do_server, "TButton"), ("Join server", self.do_join, "TButton"),
                    ("Import brain backup", self.do_model, "TButton"), ("Train overnight", self.do_train, "TButton"),
+                   ("Train one skill", self.do_train_skill, "TButton"),
                    ("Settings", self.do_settings, "TButton")]
         per_row = 4 if self.compact else 7
         for i, (text, cmd, style) in enumerate(buttons):
@@ -359,6 +360,14 @@ class App:
             return
         self._bg("Train overnight", lambda: self.rt.start_training(hours, True, self.rt.current))
 
+    def do_train_skill(self):
+        def go():
+            agent = self.rt.start_agent(self.rt.current)
+            with agent._actuation_lock:
+                result = agent.skill_coach.practice_one()
+            self.root.after(0, lambda: messagebox.showinfo("Skill practice", result))
+        self._bg("Train one skill", go)
+
     def do_settings(self):
         SettingsDialog(self)
 
@@ -491,6 +500,7 @@ class SettingsDialog:
               ("server.auto_port_fallback", "Automatically use another port if busy (true / false)"),
               ("server.difficulty", "Difficulty (easy / normal / hard)"),
               ("training.keep_inventory", "Keep inventory while training (true / false)"),
+              ("training.allow_advanced_moves", "Experimental trained lava jumps (default false)"),
               ("training.hours", "Overnight training hours"),
               ("agent.owner", "Bots only obey this player (blank = anyone)"),
               ("gui.compact", "Small-screen layout (auto / true / false)")]
