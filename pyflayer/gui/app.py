@@ -863,7 +863,8 @@ class App:
 
 
 class SettingsDialog:
-    FIELDS = [("llm.api_key", "AI API key"), ("llm.model", "AI model (blank = provider default)"),
+    FIELDS = [("llm.api_key", "AI API key(s) - add several, separated by commas, and they take turns "
+                              "when one hits its limit"), ("llm.model", "AI model (blank = provider default)"),
               ("llm.base_url", "Base URL (only for custom / local AI)"),
               ("llm.models.chat", "Groq fast chat / routing model"),
               ("llm.models.world", "Groq world / inventory model"),

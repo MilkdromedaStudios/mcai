@@ -10,7 +10,7 @@ providers, retries, and jumps to the next one when one is rate-limited.
 """
 from __future__ import annotations
 
-from .llm import PROVIDERS
+from .llm import PROVIDERS, split_keys
 
 PREFIX = {"groq": "groq", "gemini": "gemini", "openrouter": "openrouter", "openai": "openai",
           "anthropic": "anthropic", "mistral": "mistral", "deepseek": "deepseek", "together": "together_ai",
@@ -32,14 +32,15 @@ def build(cfg) -> str:
     if llm.get("api_key") and llm.get("provider") not in keys:
         keys[llm.get("provider")] = llm["api_key"]
     deployments = []          # (group, litellm model, key, api_base)
-    for prov, key in keys.items():
-        if prov not in PREFIX or not key:   # (the "litellm" entry is the proxy's own master key, not a provider)
+    for prov, value in keys.items():
+        if prov not in PREFIX or not value:   # (the "litellm" entry is the proxy's own master key, not a provider)
             continue
         models = FREE_MODELS.get(prov) or [PROVIDERS[prov]["model"]]
         if llm.get("provider") == prov and llm.get("model"):
             models = [llm["model"], *[m for m in models if m != llm["model"]]]
-        for i, m in enumerate(models):
-            deployments.append(("pyflayer" if i == 0 else "pyflayer-backup", f"{PREFIX[prov]}/{m}", key, None))
+        for key in split_keys(value):         # several keys = several deployments; LiteLLM spreads the load
+            for i, m in enumerate(models):
+                deployments.append(("pyflayer" if i == 0 else "pyflayer-backup", f"{PREFIX[prov]}/{m}", key, None))
     local = dict(cfg.get("training.local") or {})
     from .ollama_auto import choose_model, is_auto
     if is_auto(local.get("model")):

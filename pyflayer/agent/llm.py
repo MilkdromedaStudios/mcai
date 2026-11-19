@@ -66,6 +66,29 @@ PROVIDERS = {
 }
 
 
+def split_keys(value) -> list[str]:
+    """One provider can have many API keys: a list, or one string with keys separated by commas/spaces."""
+    if not value:
+        return []
+    items = value if isinstance(value, (list, tuple)) else re.split(r"[\s,;]+", str(value))
+    out = []
+    for k in items:
+        k = str(k).strip()
+        if k and k not in out:
+            out.append(k)
+    return out
+
+
+def keys_for(cfg: dict) -> list[str]:
+    import os
+    name = (cfg.get("provider") or "custom").lower()
+    prov = PROVIDERS.get(name, PROVIDERS["custom"])
+    keys = split_keys((cfg.get("keys") or {}).get(name)) or split_keys(cfg.get("api_key"))
+    if not keys and prov.get("key_env"):
+        keys = split_keys(os.environ.get(prov["key_env"], ""))
+    return keys
+
+
 def resolve(cfg: dict) -> dict:
     """Effective base_url / api_key / model / headers for the configured provider."""
     import os
@@ -73,8 +96,8 @@ def resolve(cfg: dict) -> dict:
     base = cfg.get("base_url") or prov["base_url"]
     name = (cfg.get("provider") or "custom").lower()
     # each provider keeps its own key (llm.keys), so switching provider never loses another provider's key
-    key = (cfg.get("keys") or {}).get(name) or cfg.get("api_key") or \
-        (os.environ.get(prov["key_env"], "") if prov.get("key_env") else "")
+    keys = keys_for(cfg)
+    key = keys[0] if keys else ""
     model = cfg.get("model") or prov["model"]
     return {"base_url": base, "api_key": key, "model": model, "headers": prov.get("headers", {}),
             "local": prov.get("local", False)}
@@ -140,7 +163,11 @@ class LLM:
         from openai import OpenAI
         r = resolve(self.cfg)
         self.model = r["model"] or "gpt-4.1-mini"
-        kw = {"api_key": r["api_key"] or "not-needed", "timeout": float(self.cfg.get("timeout", 120)),
+        keys = keys_for(self.cfg)
+        self._keys = keys
+        self._key_i = min(getattr(self, "_key_i", 0), max(0, len(keys) - 1))
+        key = keys[self._key_i] if keys else r["api_key"]
+        kw = {"api_key": key or "not-needed", "timeout": float(self.cfg.get("timeout", 120)),
               "max_retries": 1, "base_url": r["base_url"]}   # switch to a backup model fast
         if r["headers"]:
             kw["default_headers"] = r["headers"]
@@ -148,6 +175,8 @@ class LLM:
 
     def reconfigure(self, cfg: dict):
         self.cfg = cfg
+        self._key_i = 0
+        self._key_cool = {}
         self._local_ready = False
         self.mode = cfg.get("tool_mode", "auto")
         self.client = None
@@ -269,6 +298,8 @@ class LLM:
             try:
                 return self._create_once(first, **kw)
             except _AllRateLimited:
+                if self._rotate_key():
+                    continue                       # same AI, next API key: no waiting
                 r = self._emergency(kw, "every model is rate-limited")
                 if r is not None:
                     return r
@@ -343,6 +374,32 @@ class LLM:
         self.last_error = f"all models failed: {last_exc}"
         raise RuntimeError(f"no AI model on this key worked (last error: {last_exc}). Check your plan/key, or set "
                            f"llm.backup_models in config.json")
+
+    def _rotate_key(self) -> bool:
+        """Several keys for this provider: when one is rate-limited, carry on with the next free one."""
+        keys = getattr(self, "_keys", [])
+        if len(keys) < 2:
+            return False
+        now = time.time()
+        self._key_cool = getattr(self, "_key_cool", {})
+        self._key_cools = getattr(self, "_key_cools", {})
+        cur = self._key_i
+        self._key_cool[cur] = min((v for v in self._cool.values() if v > now), default=now + 60)
+        self._key_cools[cur] = dict(self._cool)          # remember this key's own model limits
+        for step in range(1, len(keys)):
+            nxt = (cur + step) % len(keys)
+            if self._key_cool.get(nxt, 0) <= now:
+                self._key_i = nxt
+                self._cool = {m: t for m, t in self._key_cools.get(nxt, {}).items() if t > now}
+                self._make_client()
+                log.warning("API key %d/%d is rate-limited; switching to key %d", cur + 1, len(keys), nxt + 1)
+                if self.on_status:
+                    try:
+                        self.on_status(f"rate limit on API key {cur + 1} - switched to key {nxt + 1} of {len(keys)}")
+                    except Exception:  # noqa: BLE001
+                        pass
+                return True
+        return False
 
     def _call(self, model, kw):
         lim = self.cfg.get("local_limits")
@@ -491,5 +548,6 @@ def bot_llm_config(llm_cfg: dict, override: dict | None) -> dict:
     cfg["provider"] = prov
     cfg["model"] = override.get("model", "")
     cfg["base_url"] = override.get("base_url", "")
-    cfg["api_key"] = (llm_cfg.get("keys") or {}).get(prov, "")     # never send one provider's key to another
+    cfg["api_key"] = ""                                   # never send one provider's key to another:
+    # keys_for() picks this provider's own saved key(s) from llm.keys
     return cfg
