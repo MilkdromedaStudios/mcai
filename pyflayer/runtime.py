@@ -42,6 +42,7 @@ class Session:
         self.brain = None
         self.agent = None
         self.trainer = None
+        self.saved_llm = None
 
 
 class Runtime:
@@ -251,7 +252,8 @@ class Runtime:
         self.status = f"{s.name}: agent running"
         return s.agent
 
-    def start_training(self, hours: float | None = None, background: bool = True, name: str | None = None):
+    def start_training(self, hours: float | None = None, background: bool = True, name: str | None = None,
+                       ai: str = "default"):
         from .agent.trainer import Trainer
         with self._lock:
             s = self.session(name)
@@ -265,10 +267,37 @@ class Runtime:
             if self.server:
                 self.server.command(f"difficulty {self.cfg['server']['difficulty']}")
                 self.server.command("gamerule spawn_monsters true")
+            if ai == "local":
+                self._use_local_ai(s)
             s.trainer = Trainer(s.agent, hours if hours is not None else self.cfg["training"]["hours"])
             self.status = f"{s.name}: training"
             s.trainer.start(background=background)
+            if ai == "local":
+                threading.Thread(target=self._restore_ai_after, args=(s, s.trainer), daemon=True).start()
             return s.trainer
+
+    def _use_local_ai(self, s):
+        """Overnight training on a local AI: swap the bot's brain to the capped local model for the run."""
+        from .agent import local_ai
+        from .agent.llm import LLM
+        cfg = local_ai.llm_config(self.cfg)
+        llm = LLM(cfg)
+        msg = llm.test()
+        if not llm.configured or not msg.startswith("OK") or "(emergency)" in msg:
+            raise RuntimeError(f"Local AI at {cfg['base_url']} isn't answering ({msg}). Start Ollama / LM Studio "
+                               f"and pull the model first, e.g.:  ollama pull {local_ai.settings(self.cfg)['model']}")
+        llm.on_wait = s.agent.llm.on_wait
+        s.saved_llm = s.agent.llm
+        s.agent.llm = llm
+        s.agent._note(f"[ai] overnight training uses the local AI {cfg['model']} at {cfg['base_url']} "
+                      f"(1 request at a time, {cfg['local_limits']['min_interval_s']}s apart)")
+
+    def _restore_ai_after(self, s, trainer):
+        while trainer.running:
+            time.sleep(5)
+        if getattr(s, "saved_llm", None) and s.agent:
+            s.agent.llm = s.saved_llm
+            s.saved_llm = None
 
     def start_all(self, training: bool = False, hours: float | None = None):
         """Start every profile (staggered so a Pi is not hammered by 5 logins at once)."""

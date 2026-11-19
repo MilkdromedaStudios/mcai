@@ -57,6 +57,8 @@ DEFAULTS: dict = {
             "fallback": "qwen/qwen3.8-27b",
         },
         "keys": {},                  # saved API key per provider, e.g. {"groq": "...", "gemini": "..."}
+        "emergency_fallbacks": [],   # other AIs to use at once if the main one is rate-limited or down,
+                                     # e.g. ["openrouter", "ollama", {"provider": "litellm"}] (keys from llm.keys)
         "backup_models": [],
         "wait_when_rate_limited": True,  # every model rate-limited -> wait and retry instead of failing         # extra models to try if the main one fails (404 / no access / rate limit)
         "tool_mode": "auto",         # auto | native | json
@@ -78,6 +80,9 @@ DEFAULTS: dict = {
         "wiki_crawl": True,
         "wiki_rate_per_sec": 1.0,
         "reflect_every_min": 20,
+        "ai": "default",             # default | local  (which AI overnight training uses)
+        "local": {"provider": "ollama", "base_url": "", "model": "qwen2.5:3b", "cpu_threads": 0,
+                  "gpu_layers": -1, "context": 4096, "max_tokens": 300, "min_interval_s": 1.5},
     },
     "update": {
         "repo": "MilkdromedaStudios/mcai",   # GitHub repo whose releases the updater installs
