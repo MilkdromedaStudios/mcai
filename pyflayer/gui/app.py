@@ -589,13 +589,36 @@ class App:
         self._bg("Export universal model", go)
 
     def do_train(self):
+        """Overnight training: choose the normal AI or a local AI (Ollama / LM Studio), then start."""
         hours = self.cfg["training"]["hours"]
-        if not messagebox.askyesno("Train overnight", f"Train {self.rt.current} for {hours} hours?\n\n"
-                                   "It will practise beating the game, build its knowledge and save everything to "
-                                   "its model file. Training now prioritizes actual goals, verifies each result, "
-                                   "and reports when blocked. Press Stop to end early."):
-            return
-        self._bg("Train overnight", lambda: self.rt.start_training(hours, True, self.rt.current))
+        win = tk.Toplevel(self.root)
+        win.title("Train overnight")
+        win.transient(self.root)
+        win.configure(bg=BG)
+        frm = ttk.Frame(win, padding=14)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text=f"Train {self.rt.current} for {hours} hours", font=FONT_BOLD).pack(anchor="w")
+        ttk.Label(frm, text="It practises beating the game, verifies each step and saves everything to its "
+                            "model file. Press Stop to end early.", style="Muted.TLabel",
+                  wraplength=380).pack(anchor="w", pady=(2, 10))
+        loc = self.cfg.get("training.local") or {}
+        choice = tk.StringVar(value=self.cfg.get("training.ai") or "default")
+        ttk.Radiobutton(frm, text="Default AI (Settings)", value="default", variable=choice).pack(anchor="w")
+        ttk.Radiobutton(frm, text=f"Local AI - {loc.get('provider', 'ollama')} {loc.get('model', '')} "
+                                  "(free, no limits, capped CPU/GPU)", value="local", variable=choice).pack(anchor="w")
+        ttk.Label(frm, text="Local AI settings are in Settings > Overnight local AI.", style="Muted.TLabel").pack(
+            anchor="w", pady=(4, 10))
+
+        def go():
+            ai = choice.get()
+            win.destroy()
+            self.cfg.set("training.ai", ai)
+            self.cfg.save()
+            self._bg("Train overnight", lambda: self.rt.start_training(hours, True, self.rt.current, ai=ai))
+        row = ttk.Frame(frm)
+        row.pack(fill="x")
+        ttk.Button(row, text="Start training", style="Accent.TButton", command=go).pack(side="right")
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="right", padx=6)
 
     def do_train_skill(self):
         """Pick what to train: one skill drill, or train until a goal is reached."""
@@ -799,7 +822,15 @@ class SettingsDialog:
               ("training.allow_advanced_moves", "Experimental trained lava jumps (default false)"),
               ("training.hours", "Overnight training hours"),
               ("agent.owner", "Bots only obey this player (blank = anyone)"),
-              ("gui.compact", "Small-screen layout (auto / true / false)")]
+              ("gui.compact", "Small-screen layout (auto / true / false)"),
+              ("llm.emergency_fallbacks", "Emergency fallback AIs if the main one is rate-limited "
+                                          "(comma list: openrouter, gemini, ollama, litellm)"),
+              ("training.local.provider", "Overnight local AI: provider (ollama / lmstudio / custom)"),
+              ("training.local.base_url", "Overnight local AI: URL (blank = this PC; or http://pc-ip:11434/v1)"),
+              ("training.local.model", "Overnight local AI: model (e.g. qwen2.5:3b, llama3.2:3b)"),
+              ("training.local.cpu_threads", "Overnight local AI: CPU threads (0 = half the cores)"),
+              ("training.local.gpu_layers", "Overnight local AI: GPU layers (-1 auto, 0 CPU only)"),
+              ("training.local.min_interval_s", "Overnight local AI: seconds between requests")]
 
     def __init__(self, app: App):
         self.app = app
@@ -828,7 +859,10 @@ class SettingsDialog:
         for i, (key, label) in enumerate(self.FIELDS, start=2):
             ttk.Label(frm, text=label, wraplength=220 if app.compact else 300).grid(
                 row=i, column=0, sticky="w", pady=3, padx=(0, 10))
-            v = tk.StringVar(value=str(cfg.get(key, "")))
+            cur = cfg.get(key, "")
+            if isinstance(cur, list):
+                cur = ", ".join(x if isinstance(x, str) else x.get("provider", "") for x in cur)
+            v = tk.StringVar(value=str(cur))
             ttk.Entry(frm, textvariable=v, width=18,
                       show="*" if "api_key" in key else "").grid(row=i, column=1, pady=3, sticky="ew")
             self.vars[key] = v
@@ -966,7 +1000,9 @@ class SettingsDialog:
         for key, v in self.vars.items():
             old = cfg.get(key)
             val = v.get().strip()
-            if isinstance(old, bool):
+            if isinstance(old, list):
+                val = [x.strip().lower() for x in val.replace(";", ",").split(",") if x.strip()]
+            elif isinstance(old, bool):
                 val = val.lower() in ("1", "true", "yes", "on")
             elif isinstance(old, int):
                 try:

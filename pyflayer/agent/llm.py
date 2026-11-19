@@ -7,11 +7,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 
 log = logging.getLogger("pyflayer.llm")
+
+
+_LOCAL_LOCKS: dict = {}
+_LOCAL_LAST: dict = {}
 
 
 class _AllRateLimited(Exception):
@@ -54,6 +59,7 @@ PROVIDERS = {
     "together":   {"base_url": "https://api.together.xyz/v1", "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
                    "key_env": "TOGETHER_API_KEY"},
     "xai":        {"base_url": "https://api.x.ai/v1", "model": "grok-3-mini", "key_env": "XAI_API_KEY"},
+    "litellm":    {"base_url": "http://localhost:4000/v1", "model": "pyflayer", "key_env": "LITELLM_API_KEY"},
     "ollama":     {"base_url": "http://localhost:11434/v1", "model": "llama3.1", "key_env": "", "local": True},
     "lmstudio":   {"base_url": "http://localhost:1234/v1", "model": "local-model", "key_env": "", "local": True},
 }
@@ -247,6 +253,9 @@ class LLM:
             try:
                 return self._create_once(first, **kw)
             except _AllRateLimited:
+                r = self._emergency(kw, "every model is rate-limited")
+                if r is not None:
+                    return r
                 if not getattr(self, "wait_when_rate_limited", True) or getattr(self, "cancelled", False):
                     raise RuntimeError("all AI models are rate-limited right now") from None
                 now = time.time()
@@ -277,7 +286,7 @@ class LLM:
             raise _AllRateLimited()
         for selected in chain:
             try:
-                r = self.client.chat.completions.create(model=selected, **kw)
+                r = self._call(selected, kw)
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
@@ -296,6 +305,11 @@ class LLM:
                                 "until tomorrow" if daily else f"for {int(wait or 60)}s")
                     limited = True
                     continue
+                if status is None or status >= 500:
+                    # provider down / unreachable: try the emergency fallback AIs before giving up
+                    r = self._emergency(kw, f"{selected} failed: {str(exc)[:120]}")
+                    if r is not None:
+                        return r
                 self.last_error = str(exc)
                 raise
             if selected != first:
@@ -313,6 +327,60 @@ class LLM:
         self.last_error = f"all models failed: {last_exc}"
         raise RuntimeError(f"no AI model on this key worked (last error: {last_exc}). Check your plan/key, or set "
                            f"llm.backup_models in config.json")
+
+    def _call(self, model, kw):
+        lim = self.cfg.get("local_limits")
+        if not lim:
+            return self.client.chat.completions.create(model=model, **kw)
+        # local AI: never run two requests at once on the same machine, and leave gaps so the CPU/GPU can cool
+        lock = _LOCAL_LOCKS.setdefault(resolve(self.cfg)["base_url"], threading.Lock())
+        with lock:
+            gap = float(lim.get("min_interval_s", 1.0)) - (time.time() - _LOCAL_LAST.get(id(lock), 0))
+            if gap > 0:
+                time.sleep(gap)
+            kw = dict(kw)
+            kw["max_tokens"] = min(int(kw.get("max_tokens") or 400), int(lim.get("max_tokens", 300)))
+            try:
+                return self.client.chat.completions.create(model=model, **kw)
+            finally:
+                _LOCAL_LAST[id(lock)] = time.time()
+
+    def _emergency(self, kw, why):
+        """Emergency fallback: other AIs (another provider with a saved key, a LiteLLM proxy or a local model)
+        answer while the main one is rate-limited or down - so a live stream never stalls on an API limit."""
+        fbs = [f for f in (self.cfg.get("emergency_fallbacks") or []) if f]
+        if not fbs:
+            return None
+        self._fb = getattr(self, "_fb", {})
+        for fb in fbs:
+            fb = {"provider": fb} if isinstance(fb, str) else dict(fb)
+            name = f"{fb.get('provider')}:{fb.get('model', '')}"
+            if fb.get("provider") == (self.cfg.get("provider") or "") and not fb.get("model"):
+                continue
+            llm = self._fb.get(name)
+            if llm is None:
+                cfg = bot_llm_config(self.cfg, fb)
+                cfg["emergency_fallbacks"] = []          # no fallback loops
+                cfg["wait_when_rate_limited"] = False
+                llm = self._fb[name] = LLM(cfg)
+            if not llm.configured:
+                continue
+            try:
+                kw2 = {k: v for k, v in kw.items() if k != "model"}
+                r = llm._create_once(llm.model, **kw2)
+            except Exception as e:  # noqa: BLE001
+                log.warning("emergency fallback %s failed: %s", name, str(e)[:160])
+                continue
+            self.last_model = f"{name} (emergency)"
+            self.active_backup["emergency"] = name
+            log.warning("AI: %s - answered by emergency fallback %s", why, name)
+            if self.on_wait:
+                try:
+                    self.on_wait(0)
+                except Exception:  # noqa: BLE001
+                    pass
+            return r
+        return None
 
     @staticmethod
     def _retry_after(exc) -> float | None:

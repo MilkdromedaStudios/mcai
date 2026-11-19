@@ -114,10 +114,21 @@ def cmd_run(rt, args):
         rt.shutdown()
 
 
+def cmd_litellm(rt, args):
+    from .agent.litellm_cfg import build
+    from .config import data_dir
+    path = data_dir() / "litellm_config.yaml"
+    path.write_text(build(rt.cfg))
+    path.chmod(0o600)          # it contains your API keys
+    print(f"wrote {path}\n\n  pip install 'litellm[proxy]'\n  litellm --config {path}\n\n"
+          "then in PyFlayer Settings pick provider 'litellm' (model 'pyflayer').")
+
+
 def cmd_train(rt, args):
     if args.all:
         rt.start_all(training=True, hours=args.hours)
-    tr = rt.trainer or rt.start_training(args.hours, background=True)
+    tr = rt.trainer or rt.start_training(args.hours, background=True,
+                                         ai="local" if getattr(args, "local", False) else "default")
     print(f"Training for {tr.hours} h. Report: {tr.report_dir}. Ctrl+C to stop early.")
     try:
         while tr.running:
@@ -244,6 +255,8 @@ def main(argv=None):
     t = sub.add_parser("train")
     t.add_argument("--hours", type=float, default=None)
     t.add_argument("--all", action="store_true", help="train every bot profile at once")
+    t.add_argument("--local", action="store_true", help="train with the local AI (Ollama / LM Studio)")
+    sub.add_parser("litellm-config", help="write data/litellm_config.yaml (LiteLLM router with fallbacks)")
     c = sub.add_parser("config")
     c.add_argument("pairs", nargs="*")
     sub.add_parser("wiki-sync")
@@ -260,7 +273,7 @@ def main(argv=None):
         rt.current = rt.add_profile(args.bot)
     handlers = {"setup": cmd_setup, "config": cmd_config, "server": cmd_server, "run": cmd_run,
                 "train": cmd_train, "wiki-sync": cmd_wiki, "brain": cmd_brain, "selftest": cmd_selftest,
-                "gui": cmd_gui, "bots": cmd_bots, "update": cmd_update, "ai": cmd_ai, None: cmd_gui}
+                "gui": cmd_gui, "bots": cmd_bots, "update": cmd_update, "ai": cmd_ai, "litellm-config": cmd_litellm, None: cmd_gui}
     handlers[args.cmd](rt, args)
 
 

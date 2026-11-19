@@ -393,6 +393,32 @@ print(bot.inventory.summary(), bot.world.biome_at(*bot.block_pos))
 
 Environment overrides: `PYFLAYER_LLM_BASE_URL`, `PYFLAYER_LLM_API_KEY` (or `OPENAI_API_KEY`), `PYFLAYER_LLM_MODEL`, `PYFLAYER_HOME`.
 
+## Local AI, emergency fallbacks and LiteLLM
+
+**Overnight training on a local AI (free, no rate limits).** Install [Ollama](https://ollama.com) on the Pi or on
+a PC on your network, pull a small model (`ollama pull qwen2.5:3b`), then press **Train overnight** and choose
+**Local AI**. Set the URL (e.g. `http://192.168.1.20:11434/v1` for another PC), model, CPU threads and GPU layers in
+Settings. To keep the machine cool all night PyFlayer:
+- sends one request at a time with a pause between them (`min_interval_s`, default 1.5 s) and short answers;
+- creates a capped copy of the model in Ollama (`pyflayer-<model>`) using half the CPU cores by default, a 4096
+  context and your GPU-layer limit (`0` = CPU only).
+
+From the command line: `python -m pyflayer train --local`.
+
+**Emergency fallback.** If every model of your main AI is rate-limited (or the provider is down), the bot answers
+straight away with the next AI in *Settings > Emergency fallback AIs*, e.g. `openrouter, gemini, ollama`
+(each uses the key saved for that provider), instead of pausing - handy while streaming. If all of them are
+limited too, it waits for the soonest one.
+
+**LiteLLM router (optional).** [LiteLLM](https://github.com/BerriAI/litellm) can spread requests over all your
+providers with retries and fallbacks:
+
+```bash
+pip install 'litellm[proxy]'
+python -m pyflayer litellm-config            # writes data/litellm_config.yaml from your saved keys
+litellm --config data/litellm_config.yaml    # then pick provider "litellm" in Settings
+```
+
 ## Buckets (water and lava)
 
 - **Water clutch:** when falling far with a water bucket in the hotbar, the bot aims down, pours water just
