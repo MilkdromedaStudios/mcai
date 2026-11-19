@@ -399,14 +399,22 @@ Environment overrides: `PYFLAYER_LLM_BASE_URL`, `PYFLAYER_LLM_API_KEY` (or `OPEN
 **Local AI** (or pick provider **ollama** in Settings). The first time, PyFlayer does everything itself:
 - downloads Ollama into `~/mcai/.ollama` if it isn't installed (no sudo; ~1.5 GB download) and starts it in the
   background (one model loaded, one request at a time) - and stops it when you quit;
-- with model **auto** picks a model that fits the machine: `qwen2.5:1.5b` (4 GB RAM), `qwen2.5:3b` (6 GB+, e.g.
-  Pi 5 8 GB), `qwen2.5:7b` (PC with 24 GB RAM or a 10 GB+ GPU), and downloads it (shown in the activity log);
+- with model **auto** picks a model that fits the machine: `qwen2.5:1.5b` on a Raspberry Pi (a Pi CPU is slow, so
+  speed comes first), `qwen2.5:3b` on a PC with 6 GB+, `qwen2.5:7b` with 24 GB RAM or a 10 GB+ GPU, and downloads it
+  (shown in the activity log). For a much faster AI, run Ollama on a PC and put its address in the URL field;
 - for Ollama on another PC (URL like `http://192.168.1.20:11434/v1`) it downloads the model there.
 
 To keep the machine cool all night PyFlayer:
 - sends one request at a time with a pause between them (`min_interval_s`, default 1.5 s) and short answers;
-- creates a capped copy of the model in Ollama (`pyflayer-<model>`) using half the CPU cores by default, a 4096
-  context and your GPU-layer limit (`0` = CPU only).
+- creates a capped copy of the model in Ollama (`pyflayer-<model>`) using all CPU cores but one (one stays free
+  for Minecraft), a 2048 context (faster) and your GPU-layer limit (`0` = CPU only).
+
+**Power cuts.** During overnight training PyFlayer saves a checkpoint every minute and after every step
+(`data/training/<bot>-checkpoint.json`, written safely so a power cut can't corrupt it), commits the bot's brain,
+exports its model files and runs `save-all` on the Minecraft world every 3 minutes. While training runs it also
+adds a desktop autostart entry, so when the Pi boots again PyFlayer opens by itself and resumes the run after a
+30-second countdown (press *Don't resume* to cancel) with the remaining time and the steps already done. Without
+the desktop: `python -m pyflayer resume`. The autostart entry is removed when training finishes or you stop it.
 
 From the command line: `python -m pyflayer train --local`.
 

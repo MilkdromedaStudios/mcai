@@ -226,7 +226,22 @@ def cmd_bots(rt, args):
 
 def cmd_gui(rt, args):
     from .gui.app import run_gui
-    run_gui(rt)
+    run_gui(rt, auto_resume=getattr(args, "resume", False))
+
+
+def cmd_resume(rt, args):
+    names = rt.resume_interrupted(background=True)
+    if not names:
+        print("no interrupted training to resume")
+        return
+    print("resumed training for:", ", ".join(names), "- Ctrl+C to stop")
+    try:
+        while any(s.trainer and s.trainer.running for s in rt.sessions.values()):
+            time.sleep(30)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        rt.shutdown()
 
 
 def main(argv=None):
@@ -237,7 +252,9 @@ def main(argv=None):
     p.add_argument("--bot", default=None, help="bot profile name to use (see: pyflayer bots)")
     sub = p.add_subparsers(dest="cmd")
     sub.add_parser("setup")
-    sub.add_parser("gui")
+    g = sub.add_parser("gui")
+    g.add_argument("--resume", action="store_true", help="resume interrupted training without asking")
+    sub.add_parser("resume", help="resume training that was cut off by a power loss (no GUI)")
     r = sub.add_parser("run")
     r.add_argument("--all", action="store_true", help="start every bot profile")
     ai = sub.add_parser("ai", help="connect an AI provider: pyflayer ai use openrouter --key KEY [--model M]")
@@ -273,7 +290,7 @@ def main(argv=None):
         rt.current = rt.add_profile(args.bot)
     handlers = {"setup": cmd_setup, "config": cmd_config, "server": cmd_server, "run": cmd_run,
                 "train": cmd_train, "wiki-sync": cmd_wiki, "brain": cmd_brain, "selftest": cmd_selftest,
-                "gui": cmd_gui, "bots": cmd_bots, "update": cmd_update, "ai": cmd_ai, "litellm-config": cmd_litellm, None: cmd_gui}
+                "gui": cmd_gui, "bots": cmd_bots, "update": cmd_update, "ai": cmd_ai, "litellm-config": cmd_litellm, "resume": cmd_resume, None: cmd_gui}
     handlers[args.cmd](rt, args)
 
 
