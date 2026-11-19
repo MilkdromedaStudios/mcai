@@ -249,6 +249,7 @@ class Runtime:
             self.llm = LLM(self.cfg["llm"])
         if s.agent is None:
             s.agent = Agent(s.bot, self.cfg, s.brain, self.wiki, self.llm_for(s.name), self.server)
+            s.agent.llm.on_status = lambda m, a=s.agent: (a._note("[local AI] " + m), setattr(self, "status", m))
         s.agent.start()
         self.status = f"{s.name}: agent running"
         return s.agent
@@ -281,7 +282,8 @@ class Runtime:
         """Overnight training on a local AI: swap the bot's brain to the capped local model for the run."""
         from .agent import local_ai
         from .agent.llm import LLM
-        cfg = local_ai.llm_config(self.cfg)
+        say = s.agent._note if s.agent else log.info
+        cfg = local_ai.llm_config(self.cfg, progress=lambda m: (say("[local AI] " + m), setattr(self, "status", m)))
         llm = LLM(cfg)
         msg = llm.test()
         if not llm.configured or not msg.startswith("OK") or "(emergency)" in msg:
@@ -376,6 +378,8 @@ class Runtime:
                     log.exception("shutdown of %s failed", s.name)
             if getattr(self, "litellm", None):
                 self.litellm.stop()
+            from .agent import ollama_auto
+            ollama_auto.stop()                 # only stops the Ollama that PyFlayer started itself
             if self.server:
                 self.server.stop()
         finally:

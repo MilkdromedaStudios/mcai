@@ -18,7 +18,7 @@ log = logging.getLogger("pyflayer.local_ai")
 DEFAULTS = {
     "provider": "ollama",          # ollama | lmstudio | custom
     "base_url": "",                # blank = provider default (http://localhost:11434/v1 for Ollama)
-    "model": "qwen2.5:3b",         # small + quick + good at tool calls; try llama3.2:3b or qwen2.5:7b on a PC
+    "model": "auto",               # auto = chosen for this machine's RAM/GPU and downloaded automatically
     "cpu_threads": 0,              # 0 = half of this PC's cores
     "gpu_layers": -1,              # -1 = let Ollama decide, 0 = CPU only, N = only N layers on the GPU
     "context": 4096,               # smaller context = less memory and faster answers
@@ -62,7 +62,7 @@ def prepare_ollama(base_url: str, model: str, threads: int, gpu_layers: int, ctx
     return model
 
 
-def llm_config(cfg) -> dict:
+def llm_config(cfg, progress=log.info) -> dict:
     """The llm config dict for overnight training on a local AI."""
     s = settings(cfg)
     prov = s["provider"]
@@ -70,6 +70,8 @@ def llm_config(cfg) -> dict:
     threads = int(s["cpu_threads"]) or max(1, (os.cpu_count() or 2) // 2)
     model = s["model"]
     if prov == "ollama":
+        from . import ollama_auto
+        model = ollama_auto.ensure(base, model, progress=progress)     # install/start/choose/download as needed
         model = prepare_ollama(base, model, threads, int(s["gpu_layers"]), int(s["context"]))
     llm = dict(cfg["llm"])
     llm.update({"provider": prov, "base_url": base, "model": model, "api_key": "",

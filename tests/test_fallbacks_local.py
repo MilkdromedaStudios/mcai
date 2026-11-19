@@ -42,6 +42,7 @@ class TestLocalPacing(unittest.TestCase):
     def test_one_request_at_a_time_with_gap(self):
         cfg = {"provider": "ollama", "model": "m", "local_limits": {"min_interval_s": 0.3, "max_tokens": 50}}
         llm = L.LLM(cfg)
+        llm._local_ready = True          # (auto-setup is tested separately)
         seen = []
         llm.client = fake_client(lambda model, **kw: (seen.append((time.time(), kw["max_tokens"])), ok(model))[1])
         llm._chain = lambda first: [first]

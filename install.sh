@@ -37,7 +37,7 @@ if [ "$RAM_MB" -lt 3500 ]; then
 fi
 
 # ---------------------------------------------------------------- system packages
-PKGS="python3 python3-venv python3-pip python3-tk python3-numpy ca-certificates"
+PKGS="python3 python3-venv python3-pip python3-tk python3-numpy ca-certificates zstd"
 MISSING=""
 for p in $PKGS; do dpkg -s "$p" >/dev/null 2>&1 || MISSING="$MISSING $p"; done
 if [ -n "$MISSING" ]; then
