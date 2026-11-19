@@ -59,7 +59,8 @@ PROVIDERS = {
     "together":   {"base_url": "https://api.together.xyz/v1", "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
                    "key_env": "TOGETHER_API_KEY"},
     "xai":        {"base_url": "https://api.x.ai/v1", "model": "grok-3-mini", "key_env": "XAI_API_KEY"},
-    "litellm":    {"base_url": "http://localhost:4000/v1", "model": "pyflayer", "key_env": "LITELLM_API_KEY"},
+    "litellm":    {"base_url": "http://localhost:4000/v1", "model": "pyflayer", "key_env": "LITELLM_API_KEY",
+                   "local": True},     # PyFlayer runs it on this machine; your real keys live in its config
     "ollama":     {"base_url": "http://localhost:11434/v1", "model": "llama3.1", "key_env": "", "local": True},
     "lmstudio":   {"base_url": "http://localhost:1234/v1", "model": "local-model", "key_env": "", "local": True},
 }

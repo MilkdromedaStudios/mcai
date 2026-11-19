@@ -63,6 +63,14 @@ class TestLiteLLM(unittest.TestCase):
         self.assertIn('ollama_chat/qwen2.5:3b', y)
         self.assertIn("fallbacks", y)
 
+    def test_local_only_and_master_key(self):
+        conf = {"llm": {"provider": "litellm", "keys": {"litellm": "sk-pyflayer-x"}}, "training.local": {}}
+        cfg = type("C", (), {"__getitem__": lambda s, k: conf[k], "get": lambda s, k, d=None: conf.get(k, d)})()
+        y = build(cfg)
+        self.assertIn("model_name: pyflayer\n", y)            # local Ollama becomes the main model
+        self.assertIn('master_key: "sk-pyflayer-x"', y)
+        self.assertNotIn("litellm/", y)
+
 
 if __name__ == "__main__":
     unittest.main()

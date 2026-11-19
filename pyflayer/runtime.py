@@ -244,6 +244,7 @@ class Runtime:
         s = self.session(name)
         self.start_bot(s.name)
         self.open_brain(s.name)
+        self.ensure_litellm()
         if self.llm is None:
             self.llm = LLM(self.cfg["llm"])
         if s.agent is None:
@@ -322,8 +323,26 @@ class Runtime:
             self._bot_llms[name] = LLM(cfg)
         return self._bot_llms[name]
 
+    def ensure_litellm(self, background: bool = False):
+        """Start/restart the LiteLLM router if any AI setting uses it (keys/config changes restart it)."""
+        from .agent.litellm_proxy import LiteLLMProxy, wanted
+        if not wanted(self.cfg) and not getattr(self, "litellm", None):
+            return
+        if getattr(self, "litellm", None) is None:
+            self.litellm = LiteLLMProxy(self.cfg)
+
+        def run():
+            st = self.litellm.ensure()
+            if st not in ("running", "not needed"):
+                log.warning("LiteLLM: %s", st)
+        if background:
+            threading.Thread(target=run, name="litellm-start", daemon=True).start()
+        else:
+            run()
+
     def reload_llm(self):
         from .agent.llm import bot_llm_config
+        self.ensure_litellm(background=True)
         if self.llm:
             self.llm.reconfigure(self.cfg["llm"])   # agents share this object, so they switch immediately
         for name, s in self.sessions.items():
@@ -355,6 +374,8 @@ class Runtime:
                         s.brain.export_universal()
                 except Exception:  # noqa: BLE001
                     log.exception("shutdown of %s failed", s.name)
+            if getattr(self, "litellm", None):
+                self.litellm.stop()
             if self.server:
                 self.server.stop()
         finally:

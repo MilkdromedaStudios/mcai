@@ -57,6 +57,7 @@ DEFAULTS: dict = {
             "fallback": "qwen/qwen3.8-27b",
         },
         "keys": {},                  # saved API key per provider, e.g. {"groq": "...", "gemini": "..."}
+        "litellm": {"auto_start": True, "port": 4000},   # PyFlayer starts/stops the LiteLLM router itself
         "emergency_fallbacks": [],   # other AIs to use at once if the main one is rate-limited or down,
                                      # e.g. ["openrouter", "ollama", {"provider": "litellm"}] (keys from llm.keys)
         "backup_models": [],
