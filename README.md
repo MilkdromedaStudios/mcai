@@ -418,6 +418,11 @@ the desktop: `python -m pyflayer resume`. The autostart entry is removed when tr
 
 From the command line: `python -m pyflayer train --local`.
 
+**Many API keys.** Put several keys for one provider in the API key box, separated by commas
+(`gsk_aaa, gsk_bbb, gsk_ccc`). When one key hits its rate limit the bot switches to the next free key straight
+away, and comes back to the first one once its limit has passed. With LiteLLM every key becomes its own deployment,
+so the load is spread over all of them.
+
 **Emergency fallback.** If every model of your main AI is rate-limited (or the provider is down), the bot answers
 straight away with the next AI in *Settings > Emergency fallback AIs*, e.g. `openrouter, gemini, ollama`
 (each uses the key saved for that provider), instead of pausing - handy while streaming. If all of them are
