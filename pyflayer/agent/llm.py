@@ -61,7 +61,7 @@ PROVIDERS = {
     "xai":        {"base_url": "https://api.x.ai/v1", "model": "grok-3-mini", "key_env": "XAI_API_KEY"},
     "litellm":    {"base_url": "http://localhost:4000/v1", "model": "pyflayer", "key_env": "LITELLM_API_KEY",
                    "local": True},     # PyFlayer runs it on this machine; your real keys live in its config
-    "ollama":     {"base_url": "http://localhost:11434/v1", "model": "llama3.1", "key_env": "", "local": True},
+    "ollama":     {"base_url": "http://localhost:11434/v1", "model": "auto", "key_env": "", "local": True},
     "lmstudio":   {"base_url": "http://localhost:1234/v1", "model": "local-model", "key_env": "", "local": True},
 }
 
@@ -112,6 +112,7 @@ class LLM:
         self.last_error = ""
         self._logic_fallback_until = 0.0
         self.on_wait = None                    # callback(seconds) while waiting out a rate limit
+        self.on_status = None                  # callback(text) for setup progress (local AI download ...)
         self.waiting_until = 0.0
         self.cancelled = False
         self.wait_when_rate_limited = cfg.get("wait_when_rate_limited", True)
@@ -147,6 +148,7 @@ class LLM:
 
     def reconfigure(self, cfg: dict):
         self.cfg = cfg
+        self._local_ready = False
         self.mode = cfg.get("tool_mode", "auto")
         self.client = None
         self._logic_fallback_until = 0.0
@@ -247,9 +249,22 @@ class LLM:
             chain = known + [m for m in extra if m not in self._dead and self._cool.get(m, 0) <= now][:6]
         return chain or [first]
 
+    def _ensure_local(self):
+        """Ollama: install / start it, choose and download the model the first time it's used (no setup)."""
+        if getattr(self, "_local_ready", False) or (self.cfg.get("provider") or "").lower() != "ollama":
+            return
+        from . import ollama_auto
+        say = self.on_status or (lambda m: log.info("%s", m))
+        self.model = ollama_auto.ensure(resolve(self.cfg)["base_url"], self.model, progress=say)
+        self._local_ready = True
+
     def _create(self, model=None, **kw):
         """Call the first working model; if every model is rate-limited, wait (like a player would) and retry."""
+        from . import ollama_auto
+        self._ensure_local()
         first = model or self.model
+        if (self.cfg.get("provider") or "").lower() == "ollama" and ollama_auto.is_auto(first):
+            first = self.model
         while True:
             try:
                 return self._create_once(first, **kw)

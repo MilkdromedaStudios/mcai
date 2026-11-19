@@ -606,6 +606,8 @@ class App:
         ttk.Radiobutton(frm, text="Default AI (Settings)", value="default", variable=choice).pack(anchor="w")
         ttk.Radiobutton(frm, text=f"Local AI - {loc.get('provider', 'ollama')} {loc.get('model', '')} "
                                   "(free, no limits, capped CPU/GPU)", value="local", variable=choice).pack(anchor="w")
+        ttk.Label(frm, text="First time: Ollama and the model download automatically (about 2-4 GB).",
+                  style="Muted.TLabel").pack(anchor="w")
         ttk.Label(frm, text="Local AI settings are in Settings > Overnight local AI.", style="Muted.TLabel").pack(
             anchor="w", pady=(4, 10))
 
@@ -827,7 +829,7 @@ class SettingsDialog:
                                           "(comma list: openrouter, gemini, ollama, litellm)"),
               ("training.local.provider", "Overnight local AI: provider (ollama / lmstudio / custom)"),
               ("training.local.base_url", "Overnight local AI: URL (blank = this PC; or http://pc-ip:11434/v1)"),
-              ("training.local.model", "Overnight local AI: model (e.g. qwen2.5:3b, llama3.2:3b)"),
+              ("training.local.model", "Overnight local AI: model (auto = picked for this machine and downloaded)"),
               ("training.local.cpu_threads", "Overnight local AI: CPU threads (0 = half the cores)"),
               ("training.local.gpu_layers", "Overnight local AI: GPU layers (-1 auto, 0 CPU only)"),
               ("training.local.min_interval_s", "Overnight local AI: seconds between requests")]

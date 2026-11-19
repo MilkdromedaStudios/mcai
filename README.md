@@ -395,10 +395,15 @@ Environment overrides: `PYFLAYER_LLM_BASE_URL`, `PYFLAYER_LLM_API_KEY` (or `OPEN
 
 ## Local AI, emergency fallbacks and LiteLLM
 
-**Overnight training on a local AI (free, no rate limits).** Install [Ollama](https://ollama.com) on the Pi or on
-a PC on your network, pull a small model (`ollama pull qwen2.5:3b`), then press **Train overnight** and choose
-**Local AI**. Set the URL (e.g. `http://192.168.1.20:11434/v1` for another PC), model, CPU threads and GPU layers in
-Settings. To keep the machine cool all night PyFlayer:
+**Overnight training on a local AI (free, no rate limits, zero setup).** Press **Train overnight** and choose
+**Local AI** (or pick provider **ollama** in Settings). The first time, PyFlayer does everything itself:
+- downloads Ollama into `~/mcai/.ollama` if it isn't installed (no sudo; ~1.5 GB download) and starts it in the
+  background (one model loaded, one request at a time) - and stops it when you quit;
+- with model **auto** picks a model that fits the machine: `qwen2.5:1.5b` (4 GB RAM), `qwen2.5:3b` (6 GB+, e.g.
+  Pi 5 8 GB), `qwen2.5:7b` (PC with 24 GB RAM or a 10 GB+ GPU), and downloads it (shown in the activity log);
+- for Ollama on another PC (URL like `http://192.168.1.20:11434/v1`) it downloads the model there.
+
+To keep the machine cool all night PyFlayer:
 - sends one request at a time with a pause between them (`min_interval_s`, default 1.5 s) and short answers;
 - creates a capped copy of the model in Ollama (`pyflayer-<model>`) using half the CPU cores by default, a 4096
   context and your GPU-layer limit (`0` = CPU only).
