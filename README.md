@@ -410,14 +410,13 @@ straight away with the next AI in *Settings > Emergency fallback AIs*, e.g. `ope
 (each uses the key saved for that provider), instead of pausing - handy while streaming. If all of them are
 limited too, it waits for the soonest one.
 
-**LiteLLM router (optional).** [LiteLLM](https://github.com/BerriAI/litellm) can spread requests over all your
-providers with retries and fallbacks:
-
-```bash
-pip install 'litellm[proxy]'
-python -m pyflayer litellm-config            # writes data/litellm_config.yaml from your saved keys
-litellm --config data/litellm_config.yaml    # then pick provider "litellm" in Settings
-```
+**LiteLLM router (installed and managed automatically).** `install.sh` installs
+[LiteLLM](https://github.com/BerriAI/litellm) in its own environment (`.venv-litellm`, so it can't clash with
+PyFlayer's packages or Raspberry Pi OS; skip it with `--no-litellm`). Choose provider **litellm** in Settings (or
+put `litellm` in the emergency fallbacks) and PyFlayer does the rest: it writes `data/litellm_config.yaml` from your
+saved keys (free models first, a backup group, your local Ollama last), makes a private master key, starts the
+router on `127.0.0.1:4000`, restarts it when you change keys and stops it when you quit. Its log is
+`data/logs/litellm.log`. `python -m pyflayer litellm-config` just writes the config file.
 
 ## Buckets (water and lava)
 

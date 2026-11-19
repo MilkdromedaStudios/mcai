@@ -4,16 +4,19 @@
 #   ./install.sh                  install app + desktop shortcut + download server/Java/game data
 #   ./install.sh --nightly 23:00  also train automatically every night at 23:00 for 7 hours
 #   ./install.sh --no-setup       skip the (one-time ~150 MB) Minecraft/Java download
+#   ./install.sh --no-litellm     don't install the LiteLLM AI router (installed by default, in .venv-litellm)
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$APP_DIR/.venv"
 NIGHTLY=""
 DO_SETUP=1
+DO_LITELLM=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --nightly) NIGHTLY="${2:-23:00}"; shift 2 ;;
     --no-setup) DO_SETUP=0; shift ;;
+    --no-litellm) DO_LITELLM=0; shift ;;
     *) echo "unknown option $1"; exit 1 ;;
   esac
 done
@@ -52,6 +55,25 @@ fi
 "$VENV/bin/pip" install -q --upgrade pip
 "$VENV/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 "$VENV/bin/python" -c "import tkinter, numpy, openai" || { echo "python dependencies missing"; exit 1; }
+
+# ---------------------------------------------------------------- LiteLLM AI router (own venv: it has many
+# dependencies of its own, so it can never break PyFlayer's packages; PyFlayer starts/stops it automatically)
+LITELLM_VENV="$APP_DIR/.venv-litellm"
+if [ "$DO_LITELLM" = 1 ]; then
+  if [ -x "$LITELLM_VENV/bin/litellm" ]; then
+    say "Updating LiteLLM (AI router)"
+    "$LITELLM_VENV/bin/pip" install -q --upgrade 'litellm[proxy]' || warn "LiteLLM update failed; keeping the installed one"
+  else
+    say "Installing LiteLLM (AI router with automatic fallbacks) - this can take a few minutes on a Pi"
+    if python3 -m venv "$LITELLM_VENV" && "$LITELLM_VENV/bin/pip" install -q --upgrade pip \
+        && "$LITELLM_VENV/bin/pip" install -q 'litellm[proxy]'; then
+      say "LiteLLM installed in .venv-litellm"
+    else
+      warn "LiteLLM could not be installed (PyFlayer works without it). Retry later with: ./install.sh --no-setup"
+      rm -rf "$LITELLM_VENV"
+    fi
+  fi
+fi
 
 # ---------------------------------------------------------------- launcher
 mkdir -p "$HOME/.local/bin"
