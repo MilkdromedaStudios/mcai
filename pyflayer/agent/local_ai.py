@@ -19,9 +19,9 @@ DEFAULTS = {
     "provider": "ollama",          # ollama | lmstudio | custom
     "base_url": "",                # blank = provider default (http://localhost:11434/v1 for Ollama)
     "model": "auto",               # auto = chosen for this machine's RAM/GPU and downloaded automatically
-    "cpu_threads": 0,              # 0 = half of this PC's cores
+    "cpu_threads": 0,              # 0 = all cores but one (one stays free for Minecraft / the desktop)
     "gpu_layers": -1,              # -1 = let Ollama decide, 0 = CPU only, N = only N layers on the GPU
-    "context": 4096,               # smaller context = less memory and faster answers
+    "context": 2048,               # smaller context = less memory and much faster answers on a Pi
     "max_tokens": 300,
     "min_interval_s": 1.5,         # pause between requests so the CPU/GPU never runs flat out
 }
@@ -67,7 +67,7 @@ def llm_config(cfg, progress=log.info) -> dict:
     s = settings(cfg)
     prov = s["provider"]
     base = s["base_url"] or PROVIDERS.get(prov, PROVIDERS["custom"])["base_url"]
-    threads = int(s["cpu_threads"]) or max(1, (os.cpu_count() or 2) // 2)
+    threads = int(s["cpu_threads"]) or max(1, (os.cpu_count() or 2) - 1)
     model = s["model"]
     if prov == "ollama":
         from . import ollama_auto

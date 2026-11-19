@@ -666,6 +666,58 @@ class App:
         ttk.Button(frm, text="Train to goal...", command=goal).pack(fill="x", pady=2)
         ttk.Button(frm, text="Cancel", command=win.destroy).pack(fill="x", pady=(8, 0))
 
+    def offer_resume(self, auto: bool = False):
+        """After a power cut: training that was cut off resumes on its own after a short countdown."""
+        from ..agent.trainer import interrupted_runs
+        runs = [r for r in interrupted_runs() if r["bot"] in self.rt.profiles()]
+        if not runs:
+            return
+        secs = {"n": 5 if auto else int(self.cfg.get("training.resume_countdown_s", 30))}
+        win = tk.Toplevel(self.root)
+        win.title("Resume training")
+        win.transient(self.root)
+        win.configure(bg=BG)
+        frm = ttk.Frame(win, padding=16)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Training was interrupted", font=FONT_BOLD).pack(anchor="w")
+        for r in runs:
+            when = time.strftime("%H:%M", time.localtime(r["saved_at"]))
+            ttk.Label(frm, text=f"{r['bot']}: {r['remaining_s'] // 60} min left, {len(r.get('done', []))} steps "
+                                f"done, last saved {when} (was on {r.get('current') or '-'})",
+                      style="Muted.TLabel", wraplength=420).pack(anchor="w", pady=(4, 0))
+        msg = tk.StringVar()
+        ttk.Label(frm, textvariable=msg).pack(anchor="w", pady=(10, 8))
+        state = {"done": False}
+
+        def resume():
+            if state["done"]:
+                return
+            state["done"] = True
+            win.destroy()
+            self._bg("Resume training", lambda: self.rt.resume_interrupted(background=True))
+
+        def cancel():
+            state["done"] = True
+            from ..agent.trainer import checkpoint_path, _atomic_json
+            for r in runs:                       # don't ask again for these runs
+                r["state"] = "stopped"
+                _atomic_json(checkpoint_path(r["bot"]), r)
+            win.destroy()
+
+        def tick():
+            if state["done"]:
+                return
+            if secs["n"] <= 0:
+                return resume()
+            msg.set(f"Resuming automatically in {secs['n']} s ...")
+            secs["n"] -= 1
+            self.root.after(1000, tick)
+        row = ttk.Frame(frm)
+        row.pack(fill="x")
+        ttk.Button(row, text="Resume now", style="Accent.TButton", command=resume).pack(side="right")
+        ttk.Button(row, text="Don't resume", command=cancel).pack(side="right", padx=6)
+        tick()
+
     def do_settings(self):
         SettingsDialog(self)
 
@@ -1024,5 +1076,7 @@ class SettingsDialog:
 
 
 
-def run_gui(rt):
-    App(rt).run()
+def run_gui(rt, auto_resume: bool = False):
+    app = App(rt)
+    app.root.after(1500, lambda: app.offer_resume(auto_resume))
+    app.run()

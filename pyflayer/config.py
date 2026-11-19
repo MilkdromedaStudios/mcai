@@ -82,8 +82,9 @@ DEFAULTS: dict = {
         "wiki_rate_per_sec": 1.0,
         "reflect_every_min": 20,
         "ai": "default",             # default | local  (which AI overnight training uses)
+        "resume_countdown_s": 30,    # after a power cut, interrupted training resumes by itself after this
         "local": {"provider": "ollama", "base_url": "", "model": "auto", "cpu_threads": 0,
-                  "gpu_layers": -1, "context": 4096, "max_tokens": 300, "min_interval_s": 1.5},
+                  "gpu_layers": -1, "context": 2048, "max_tokens": 300, "min_interval_s": 1.5},
     },
     "update": {
         "repo": "MilkdromedaStudios/mcai",   # GitHub repo whose releases the updater installs

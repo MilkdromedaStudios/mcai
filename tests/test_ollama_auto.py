@@ -9,9 +9,10 @@ from pyflayer.agent import ollama_auto as O
 
 class TestChoose(unittest.TestCase):
     def test_fits_the_machine(self):
-        self.assertEqual(O.choose_model(4, 0), "qwen2.5:1.5b")      # Pi 4 GB
-        self.assertEqual(O.choose_model(8, 0), "qwen2.5:3b")        # Pi 5 8 GB
-        self.assertEqual(O.choose_model(16, 12), "qwen2.5:7b")      # PC with a GPU
+        self.assertEqual(O.choose_model(8, 0, pi=True), "qwen2.5:1.5b")   # Pi: speed first
+        self.assertEqual(O.choose_model(4, 0, pi=False), "qwen2.5:1.5b")
+        self.assertEqual(O.choose_model(8, 0, pi=False), "qwen2.5:3b")
+        self.assertEqual(O.choose_model(16, 12, pi=False), "qwen2.5:7b")  # PC with a GPU
         self.assertTrue(O.is_auto("auto") and O.is_auto("") and not O.is_auto("qwen2.5:3b"))
 
 

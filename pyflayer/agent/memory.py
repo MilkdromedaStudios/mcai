@@ -416,8 +416,11 @@ class Brain:
                 }
             tmp = path.with_name(path.name + ".part")
             try:
-                with gzip.open(tmp, "wt", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False)
+                with open(tmp, "wb") as raw:
+                    with gzip.open(raw, "wt", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False)
+                    raw.flush()
+                    os.fsync(raw.fileno())       # really on disk before it replaces the old file (power loss)
                 os.replace(tmp, path)
             finally:
                 if tmp.exists():
@@ -494,8 +497,11 @@ class Brain:
                 }
             tmp = path.with_name(path.name + ".part")
             try:
-                with gzip.open(tmp, "wt", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False)
+                with open(tmp, "wb") as raw:
+                    with gzip.open(raw, "wt", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False)
+                    raw.flush()
+                    os.fsync(raw.fileno())       # really on disk before it replaces the old file (power loss)
                 os.replace(tmp, path)
             finally:
                 if tmp.exists():

@@ -156,6 +156,34 @@ def build_curriculum() -> list[Milestone]:
     ]
 
 
+
+def checkpoint_path(bot: str):
+    return data_dir("training") / f"{bot}-checkpoint.json"
+
+
+def _atomic_json(path, data):
+    import os
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def interrupted_runs(max_age_h: float = 72) -> list[dict]:
+    """Training runs that were still 'running' when the program died (power cut, crash, unplugged)."""
+    out = []
+    for p in data_dir("training").glob("*-checkpoint.json"):
+        try:
+            ck = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if ck.get("state") == "running" and ck.get("remaining_s", 0) > 120 and \
+                time.time() - ck.get("saved_at", 0) < max_age_h * 3600:
+            out.append(ck)
+    return out
+
 class Trainer:
     def __init__(self, agent, hours: float = 7.0):
         self.agent = agent
@@ -183,6 +211,24 @@ class Trainer:
         self._finished = False
         self._autosave_stop = threading.Event()
         self._model_exports = 0
+        self.ai = "default"                 # which AI the run uses (saved in the checkpoint)
+        self.resume_from: dict | None = None
+
+    # ================================================================== checkpoint (power loss)
+    @property
+    def checkpoint_path(self):
+        return checkpoint_path(self.bot.username)
+
+    def checkpoint(self, state: str = "running"):
+        """Write the run's progress to disk (atomically, fsynced) so an unplugged Pi can carry on later."""
+        if not getattr(self.bot, "username", None):
+            return
+        data = {"bot": self.bot.username, "state": state, "ai": self.ai, "hours": self.hours,
+                "remaining_s": round(self.time_left), "current": self.current,
+                "done": sorted(self.done_this_run), "recovery_attempts": self.recovery_attempts,
+                "completed_attempts": self.completed_attempts, "successful_attempts": self.successful_attempts,
+                "dimension": getattr(self.bot, "dimension", ""), "saved_at": time.time()}
+        _atomic_json(self.checkpoint_path, data)
 
     def note(self, msg):
         line = time.strftime("%H:%M:%S ") + msg
@@ -202,6 +248,12 @@ class Trainer:
         self.successful_attempts = 0
         self.done_this_run.clear()
         self.recovery_attempts.clear()
+        ck = self.resume_from
+        if ck:
+            self.done_this_run.update(ck.get("done", []))
+            self.recovery_attempts.update(ck.get("recovery_attempts", {}))
+            self.completed_attempts = int(ck.get("completed_attempts", 0))
+            self.successful_attempts = int(ck.get("successful_attempts", 0))
         self._finished = False
         self._model_exports = 0
         self._autosave_stop.clear()
@@ -209,7 +261,12 @@ class Trainer:
         self.start_time = time.time()
         self.end_time = self.start_time + self.hours * 3600
         self.brain.start_session("training")
-        self.note(f"overnight training started for {self.hours:.1f} h")
+        if ck:
+            self.note(f"RESUMED after an interruption: {self.hours * 60:.0f} min left, "
+                      f"{len(self.done_this_run)} steps already done, was on '{ck.get('current') or '-'}'")
+        else:
+            self.note(f"overnight training started for {self.hours:.1f} h")
+        self.checkpoint()
         self._save_models()  # create both files before any practice; crash-safe snapshot
         autosave = threading.Thread(target=self._autosave_loop,
                                     name="train-model-autosave", daemon=True)
@@ -247,11 +304,19 @@ class Trainer:
 
     def _autosave_loop(self):
         # Separate from the action worker: save even during a long mining task.
-        while not self._autosave_stop.wait(180):
+        n = 0
+        while not self._autosave_stop.wait(60):
             if not self.running:
                 break
+            n += 1
             try:
-                self._save_models()
+                self.brain.commit()
+                self.checkpoint()
+                if n % 3 == 0:                      # every 3 minutes
+                    self._save_models()
+                    srv = getattr(self.agent, "server", None)
+                    if srv and getattr(srv, "running", False):
+                        srv.command("save-all")     # write the Minecraft world to disk too
             except Exception as e:  # noqa: BLE001
                 log.exception("model autosave failed")
                 self.note(f"MODEL AUTOSAVE ERROR: {e}")
@@ -565,6 +630,10 @@ class Trainer:
             log.exception("milestone crashed")
         secs = time.time() - t0
         self.completed_attempts += 1
+        try:
+            self.checkpoint()                       # after every step, not only once a minute
+        except OSError:
+            pass
         if not ok and (err == "stopped" or "bot died" in err) and time.time() - self.agent.interrupted_at < secs + 5:
             self.note(f"milestone '{ms.name}' interrupted ({err}); will retry")
             self.agent.wait_reflexes()
@@ -664,6 +733,11 @@ class Trainer:
             self.brain.end_session(f"training: {done}/{len(self.curriculum)} milestones")
             universal = self._save_models()
             self._finished = True
+            try:
+                left = self.time_left
+                self.checkpoint("finished" if left < 60 or self.status == "completed" else "stopped")
+            except OSError:
+                pass
             self.note(f"training finished: {done}/{len(self.curriculum)} milestones; "
                       f"report {path}; universal model {universal}")
 

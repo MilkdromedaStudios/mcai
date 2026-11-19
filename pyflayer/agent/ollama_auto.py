@@ -52,10 +52,20 @@ def _vram_gb() -> float:
         return 0.0
 
 
-def choose_model(ram_gb: float | None = None, vram_gb: float | None = None) -> str:
+def is_raspberry_pi() -> bool:
+    try:
+        return "raspberry pi" in Path("/proc/device-tree/model").read_text(errors="ignore").lower()
+    except OSError:
+        return False
+
+
+def choose_model(ram_gb: float | None = None, vram_gb: float | None = None, pi: bool | None = None) -> str:
     """A small, fast model that can use tools and still leaves room for Minecraft."""
     ram = _ram_gb() if ram_gb is None else ram_gb
     vram = _vram_gb() if vram_gb is None else vram_gb
+    if is_raspberry_pi() if pi is None else pi:
+        # a Pi CPU manages ~2-4 words/s with a 3B model but ~6-10 with 1.5B - speed matters more here
+        return "qwen2.5:1.5b"
     if vram >= 10 or (vram >= 6 and ram >= 16):
         return "qwen2.5:7b"
     if ram >= 24:

@@ -255,7 +255,7 @@ class Runtime:
         return s.agent
 
     def start_training(self, hours: float | None = None, background: bool = True, name: str | None = None,
-                       ai: str = "default"):
+                       ai: str = "default", resume: dict | None = None):
         from .agent.trainer import Trainer
         with self._lock:
             s = self.session(name)
@@ -271,12 +271,31 @@ class Runtime:
                 self.server.command("gamerule spawn_monsters true")
             if ai == "local":
                 self._use_local_ai(s)
+            if resume:
+                hours = resume.get("remaining_s", 0) / 3600
             s.trainer = Trainer(s.agent, hours if hours is not None else self.cfg["training"]["hours"])
+            s.trainer.ai = ai
+            s.trainer.resume_from = resume
             self.status = f"{s.name}: training"
             s.trainer.start(background=background)
+            set_resume_on_boot(True)
             if ai == "local":
                 threading.Thread(target=self._restore_ai_after, args=(s, s.trainer), daemon=True).start()
             return s.trainer
+
+    def resume_interrupted(self, background: bool = True) -> list[str]:
+        """Carry on every training run that was cut off (power loss / unplugged / crash)."""
+        from .agent.trainer import interrupted_runs
+        resumed = []
+        for ck in interrupted_runs():
+            name = ck["bot"]
+            if name not in self.profiles():
+                continue
+            log.info("resuming interrupted training of %s (%d min left)", name, ck["remaining_s"] // 60)
+            self.start_training(None, background, name, ai=ck.get("ai", "default"), resume=ck)
+            resumed.append(name)
+            time.sleep(3)
+        return resumed
 
     def _use_local_ai(self, s):
         """Overnight training on a local AI: swap the bot's brain to the capped local model for the run."""
@@ -298,6 +317,7 @@ class Runtime:
     def _restore_ai_after(self, s, trainer):
         while trainer.running:
             time.sleep(5)
+        self._maybe_clear_resume()
         if getattr(s, "saved_llm", None) and s.agent:
             s.agent.llm = s.saved_llm
             s.saved_llm = None
@@ -356,6 +376,11 @@ class Runtime:
             elif want is not self.llm:
                 want.reconfigure(bot_llm_config(self.cfg["llm"], self.cfg["bot_ai"].get(name)))
 
+    def _maybe_clear_resume(self):
+        from .agent.trainer import interrupted_runs
+        if not any(x.trainer and x.trainer.running for x in self.sessions.values()) and not interrupted_runs():
+            set_resume_on_boot(False)
+
     def shutdown(self):
         self.status = "shutting down"
         try:
@@ -382,5 +407,27 @@ class Runtime:
             ollama_auto.stop()                 # only stops the Ollama that PyFlayer started itself
             if self.server:
                 self.server.stop()
+            self._maybe_clear_resume()
         finally:
             self.status = "stopped"
+
+
+def set_resume_on_boot(on: bool):
+    """While a training run is going, start PyFlayer when the Pi boots so a power cut doesn't end the run.
+    (A desktop autostart entry; removed again when training finishes or is stopped.)"""
+    import os
+    from pathlib import Path
+    from .config import ROOT
+    f = Path(os.path.expanduser("~/.config/autostart/pyflayer-resume.desktop"))
+    try:
+        if on:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            py = ROOT / ".venv" / "bin" / "python"
+            exe = str(py) if py.exists() else "python3"
+            f.write_text("[Desktop Entry]\nType=Application\nName=PyFlayer (resume training)\n"
+                         f"Exec=sh -c 'cd \"{ROOT}\" && \"{exe}\" -m pyflayer gui --resume'\n"
+                         "X-GNOME-Autostart-enabled=true\nNoDisplay=true\n")
+        elif f.exists():
+            f.unlink()
+    except OSError as e:
+        log.debug("autostart entry: %s", e)
