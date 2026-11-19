@@ -148,6 +148,17 @@ class App:
         self.cfg = rt.cfg
         self.root = tk.Tk()
         self.root.title("PyFlayer AI")
+        self._icons = []
+        try:
+            from ..config import ROOT
+            for size in (256, 64, 32):
+                f = ROOT / "assets" / f"pyflayer-{size}.png"
+                if f.exists():
+                    self._icons.append(tk.PhotoImage(master=self.root, file=str(f)))
+            if self._icons:
+                self.root.iconphoto(True, *self._icons)     # window + taskbar icon
+        except tk.TclError:
+            pass
         mode = str(self.cfg.get("gui.compact", "auto")).lower()
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         self.compact = mode in ("1", "true", "yes", "on") or (mode == "auto" and (sw < 1000 or sh < 700))
@@ -185,6 +196,9 @@ class App:
         # ---- header
         head = ttk.Frame(root)
         head.pack(fill="x", pady=(0, gap // 2))
+        logo = next((i for i in self._icons if i.width() == 32), None)
+        if logo:
+            ttk.Label(head, image=logo).pack(side="left", padx=(0, 8))
         ttk.Label(head, text="PyFlayer", style="Title.TLabel").pack(side="left")
         ttk.Label(head, text="  AI Minecraft bots", style="Muted.TLabel").pack(side="left", pady=(3, 0))
         ttk.Button(head, text="Settings", command=self.do_settings).pack(side="right")
