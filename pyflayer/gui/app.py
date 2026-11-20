@@ -863,10 +863,7 @@ class App:
 
 
 class SettingsDialog:
-    FIELDS = [("llm.api_key", "AI API key(s) - add several, separated by commas, and they take turns "
-                              "when one hits its limit"), ("llm.model", "AI model (blank = provider default)"),
-              ("llm.base_url", "Base URL (only for custom / local AI)"),
-              ("llm.models.chat", "Groq fast chat / routing model"),
+    FIELDS = [("llm.models.chat", "Groq fast chat / routing model"),
               ("llm.models.world", "Groq world / inventory model"),
               ("llm.models.logic", "Groq precise logic / tools model"),
               ("llm.models.fallback", "Groq logic fallback model"),
@@ -901,38 +898,43 @@ class SettingsDialog:
         frm = scroll.inner
         from ..agent.llm import PROVIDERS
         self.vars = {}
-        ttk.Label(frm, text="AI provider").grid(row=0, column=0, sticky="w", pady=2)
-        self.provider = tk.StringVar(value=cfg.get("llm.provider") or "custom")
-        box = ttk.Combobox(frm, textvariable=self.provider, values=list(PROVIDERS), state="readonly",
-                           width=18)
-        box.grid(row=0, column=1, pady=3, sticky="ew")
         frm.columnconfigure(1, weight=1)
-        self.hint = tk.StringVar()
-        ttk.Label(frm, textvariable=self.hint, foreground=MUTED, wraplength=520 if app.compact else 700).grid(
-            row=1, column=0, columnspan=2, sticky="w")
-        box.bind("<<ComboboxSelected>>", lambda e: self._provider_changed(reset=True))
-        for i, (key, label) in enumerate(self.FIELDS, start=2):
+        # ---- AI APIs as tabs (API 1, API 2, ...): they take turns - when one hits its limit the next is used
+        ttk.Label(frm, text="AI APIs", font=FONT_BOLD).grid(row=0, column=0, sticky="w")
+        ttk.Label(frm, text="Add as many as you like (any provider, any key). The bot uses API 1; when it hits a "
+                            "rate limit or a key is rejected it switches to the next tab straight away, and comes "
+                            "back when the limit is over.", style="Muted.TLabel",
+                  wraplength=520 if app.compact else 700).grid(row=1, column=0, columnspan=2, sticky="w")
+        self.book = ttk.Notebook(frm)
+        self.book.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 2))
+        self.tabs: list[dict] = []
+        pool = [e for e in (cfg.get("llm.pool") or []) if e.get("provider")]
+        if not pool:
+            prov = cfg.get("llm.provider") or "custom"
+            pool = [{"provider": prov, "key": (cfg.get("llm.keys") or {}).get(prov) or cfg.get("llm.api_key") or "",
+                     "model": cfg.get("llm.model") or "", "base_url": cfg.get("llm.base_url") or ""}]
+        for e in pool:
+            self._add_tab(e)
+        addrow = ttk.Frame(frm)
+        addrow.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 8))
+        ttk.Button(addrow, text="+ Add API", command=lambda: self._add_tab({"provider": "groq"}, select=True)).pack(
+            side="left")
+        for i, (key, label) in enumerate(self.FIELDS, start=4):
             ttk.Label(frm, text=label, wraplength=220 if app.compact else 300).grid(
                 row=i, column=0, sticky="w", pady=3, padx=(0, 10))
             cur = cfg.get(key, "")
             if isinstance(cur, list):
                 cur = ", ".join(x if isinstance(x, str) else x.get("provider", "") for x in cur)
             v = tk.StringVar(value=str(cur))
-            ttk.Entry(frm, textvariable=v, width=18,
-                      show="*" if "api_key" in key else "").grid(row=i, column=1, pady=3, sticky="ew")
+            ttk.Entry(frm, textvariable=v, width=18).grid(row=i, column=1, pady=3, sticky="ew")
             self.vars[key] = v
-        # every provider keeps its own key: switching provider shows that provider's saved key
-        self.keys = dict(cfg.get("llm.keys") or {})
-        self._shown_provider = self.provider.get()
-        self.vars["llm.api_key"].set(self.keys.get(self._shown_provider, cfg.get("llm.api_key") or ""))
-        self._provider_changed(reset=False)
-        n = len(self.FIELDS) + 2
+        n = len(self.FIELDS) + 4
         # ---- AI for the selected bot (so e.g. bot "Gemini" uses Gemini and bot "Groq" uses Groq)
         bot = app.rt.current
         ov = (cfg.get("bot_ai") or {}).get(bot) or {}
         ttk.Separator(frm).grid(row=n, column=0, columnspan=2, sticky="ew", pady=(10, 6))
         ttk.Label(frm, text=f"AI for bot {bot}", font=FONT_BOLD).grid(row=n + 1, column=0, sticky="w")
-        ttk.Label(frm, text="'default' = the provider above. Pick another to give this bot its own AI "
+        ttk.Label(frm, text="'default' = the AI APIs above. Pick a provider to give this bot its own AI "
                             "(its key is the one saved for that provider).", style="Muted.TLabel",
                   wraplength=520 if app.compact else 700).grid(row=n + 2, column=0, columnspan=2, sticky="w")
         self.bot_provider = tk.StringVar(value=ov.get("provider") or "default")
@@ -955,22 +957,59 @@ class SettingsDialog:
         ttk.Button(btns, text="Test AI connection", command=self.test_ai).pack(side="left", padx=4)
         ttk.Button(btns, text="Save", style="Accent.TButton", command=self.save).pack(side="left")
 
-    def _provider_changed(self, reset: bool):
+    def _add_tab(self, e: dict, select: bool = False):
         from ..agent.llm import PROVIDERS
-        p = PROVIDERS.get(self.provider.get(), PROVIDERS["custom"])
-        if hasattr(self, "keys"):
-            # remember the key typed for the old provider, show the saved key of the new one
-            typed = self.vars["llm.api_key"].get().strip()
-            if typed:
-                self.keys[self._shown_provider] = typed
-            self._shown_provider = self.provider.get()
-            self.vars["llm.api_key"].set(self.keys.get(self._shown_provider, ""))
-        if reset:
-            self.vars["llm.base_url"].set("")
-            self.vars["llm.model"].set("")
-        key = f"key from {p['key_env']} or the field above" if p.get("key_env") else "no key needed"
-        self.hint.set(f"{p['base_url'] or 'enter your OpenAI-compatible base URL below'} | default model "
-                      f"{p['model'] or '-'} | {key}")
+        t = {k: tk.StringVar(value=str(e.get(k, "") or "")) for k in ("provider", "key", "model", "base_url")}
+        if not t["provider"].get():
+            t["provider"].set("groq")
+        f = ttk.Frame(self.book, padding=10)
+        f.columnconfigure(1, weight=1)
+        rows = (("Provider", None), ("API key(s)", "key"), ("Model (blank = default)", "model"),
+                ("Base URL (custom / local only)", "base_url"))
+        for r, (label, k) in enumerate(rows):
+            ttk.Label(f, text=label).grid(row=r, column=0, sticky="w", pady=3, padx=(0, 10))
+            if k is None:
+                box = ttk.Combobox(f, textvariable=t["provider"], values=list(PROVIDERS), state="readonly", width=18)
+                box.grid(row=r, column=1, sticky="ew", pady=3)
+            else:
+                ttk.Entry(f, textvariable=t[k], width=18, show="*" if k == "key" else "").grid(
+                    row=r, column=1, sticky="ew", pady=3)
+        hint = tk.StringVar()
+        ttk.Label(f, textvariable=hint, style="Muted.TLabel", wraplength=480).grid(
+            row=4, column=0, columnspan=2, sticky="w")
+        ttk.Button(f, text="Remove this API", style="Danger.TButton",
+                   command=lambda: self._remove_tab(t)).grid(row=5, column=1, sticky="e", pady=(6, 0))
+        t["frame"], t["hint"] = f, hint
+        self.tabs.append(t)
+        self.book.add(f, text="")
+
+        def changed(*_):
+            p = PROVIDERS.get(t["provider"].get(), PROVIDERS["custom"])
+            need = "no key needed" if p.get("local") else "key from the provider's website"
+            hint.set(f"{p['base_url'] or 'enter the base URL'} · default model {p['model'] or '-'} · {need}. "
+                     "Several keys for this provider: separate them with commas.")
+            self._retitle()
+        t["provider"].trace_add("write", changed)
+        changed()
+        if select:
+            self.book.select(f)
+
+    def _retitle(self):
+        for i, t in enumerate(self.tabs):
+            self.book.tab(t["frame"], text=f" API {i + 1} · {t['provider'].get()} ")
+
+    def _remove_tab(self, t):
+        if len(self.tabs) <= 1:
+            messagebox.showinfo("AI APIs", "Keep at least one API (set it to 'ollama' for a free local AI).",
+                                parent=self.win)
+            return
+        self.book.forget(t["frame"])
+        self.tabs.remove(t)
+        self._retitle()
+
+    def _pool(self) -> list[dict]:
+        return [{k: t[k].get().strip() for k in ("provider", "key", "model", "base_url")}
+                for t in self.tabs if t["provider"].get()]
 
     def check_updates(self):
         from .. import updater
@@ -1014,37 +1053,47 @@ class SettingsDialog:
         threading.Thread(target=check, daemon=True).start()
 
     def test_ai(self):
-        from ..agent.llm import LLM
-        cfg = dict(self.app.cfg["llm"])
-        cfg["provider"] = self.provider.get()
-        for k in ("llm.api_key", "llm.model", "llm.base_url"):
-            cfg[k.split(".")[1]] = self.vars[k].get().strip()
-        keys = dict(self.keys)
-        if cfg["api_key"]:
-            keys[cfg["provider"]] = cfg["api_key"]
-        cfg["keys"] = keys
+        from ..agent.llm import LLM, bot_llm_config
+        base = dict(self.app.cfg["llm"])
+        pool = self._pool()
         bot_p = self.bot_provider.get()
+        keys = self._merged_keys(pool)
         self.test_var.set("testing...")
 
         def run():
-            from ..agent.llm import bot_llm_config
-            out = "default AI: " + LLM(cfg).test()
+            lines = []
+            for i, e in enumerate(pool):
+                c = dict(base, pool=[e], keys=keys, emergency_fallbacks=[], wait_when_rate_limited=False)
+                lines.append(f"API {i + 1} ({e['provider']}): " + LLM(c).test())
             if bot_p not in ("", "default"):
-                bcfg = bot_llm_config(cfg, {"provider": bot_p, "model": self.bot_model.get().strip(),
-                                            "base_url": self.bot_url.get().strip()})
-                out += f"\n{self._bot_name}'s AI ({bot_p}): " + LLM(bcfg).test()
-            self.app.root.after(0, lambda: self.test_var.set(out))
+                bcfg = bot_llm_config(dict(base, keys=keys), {"provider": bot_p, "model": self.bot_model.get().strip(),
+                                                              "base_url": self.bot_url.get().strip()})
+                lines.append(f"{self._bot_name}'s own AI ({bot_p}): " + LLM(bcfg).test())
+            self.app.root.after(0, lambda: self.test_var.set("\n".join(lines)))
         threading.Thread(target=run, daemon=True).start()
+
+    def _merged_keys(self, pool) -> dict:
+        """llm.keys: every provider's keys (used by per-bot AIs, fallbacks, LiteLLM)."""
+        from ..agent.llm import split_keys
+        keys = dict(self.app.cfg.get("llm.keys") or {})
+        per = {}
+        for e in pool:
+            per.setdefault(e["provider"], []).extend(split_keys(e["key"]))
+        for prov, ks in per.items():
+            if ks:
+                keys[prov] = ", ".join(dict.fromkeys(ks))
+        return keys
 
     def save(self):
         cfg = self.app.cfg
-        cfg.set("llm.provider", self.provider.get())
-        typed = self.vars["llm.api_key"].get().strip()
-        if typed:
-            self.keys[self.provider.get()] = typed
-        else:
-            self.keys.pop(self.provider.get(), None)
-        cfg.set("llm.keys", self.keys)
+        pool = self._pool()
+        cfg.set("llm.keys", self._merged_keys(pool))
+        cfg.set("llm.pool", pool)
+        if pool:                                   # API 1 is also the classic single provider setting
+            cfg.set("llm.provider", pool[0]["provider"])
+            cfg.set("llm.model", pool[0]["model"])
+            cfg.set("llm.base_url", pool[0]["base_url"])
+            cfg.set("llm.api_key", pool[0]["key"])
         bot_ai = dict(cfg.get("bot_ai") or {})
         if self.bot_provider.get() in ("", "default"):
             bot_ai.pop(self._bot_name, None)

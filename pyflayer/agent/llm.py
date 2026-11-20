@@ -127,7 +127,7 @@ BACKUP_MODELS = {
 
 class LLM:
     def __init__(self, cfg: dict):
-        self.cfg = cfg
+        self._set_base(cfg)
         self.client = None
         self.mode = cfg.get("tool_mode", "auto")
         self.calls = 0
@@ -163,20 +163,50 @@ class LLM:
         from openai import OpenAI
         r = resolve(self.cfg)
         self.model = r["model"] or "gpt-4.1-mini"
-        keys = keys_for(self.cfg)
-        self._keys = keys
-        self._key_i = min(getattr(self, "_key_i", 0), max(0, len(keys) - 1))
-        key = keys[self._key_i] if keys else r["api_key"]
-        kw = {"api_key": key or "not-needed", "timeout": float(self.cfg.get("timeout", 120)),
+        kw = {"api_key": r["api_key"] or "not-needed", "timeout": float(self.cfg.get("timeout", 120)),
               "max_retries": 1, "base_url": r["base_url"]}   # switch to a backup model fast
         if r["headers"]:
             kw["default_headers"] = r["headers"]
         self.client = OpenAI(**kw)
 
+    # ------------------------------------------------------------------ API slots (keys / providers that take turns)
+    def _set_base(self, cfg: dict):
+        """cfg = the settings as saved. The LLM works on one 'slot' of it at a time: one provider + one key.
+        Slots come from llm.pool (Settings > AI APIs tabs: API 1, API 2 ...), or else from the provider's keys."""
+        self.base_cfg = cfg
+        slots = []
+        for e in cfg.get("pool") or []:
+            if not e or not e.get("provider"):
+                continue
+            ks = split_keys(e.get("key")) or [""]
+            for k in ks:
+                slots.append({"provider": e["provider"].lower(), "key": k, "model": e.get("model", ""),
+                              "base_url": e.get("base_url", "")})
+        if not slots:
+            ks = keys_for(cfg) or [""]
+            slots = [{"provider": (cfg.get("provider") or "custom").lower(), "key": k, "model": cfg.get("model", ""),
+                      "base_url": cfg.get("base_url", "")} for k in ks]
+        self.slots = slots
+        self._slot_i = 0
+        self._slot_cool: dict[int, float] = {}
+        self._slot_cools: dict[int, dict] = {}
+        self.cfg = self._slot_cfg(0)
+
+    def _slot_cfg(self, i: int) -> dict:
+        s = self.slots[i]
+        c = dict(self.base_cfg)
+        c.update(provider=s["provider"], model=s["model"], base_url=s["base_url"], api_key=s["key"])
+        if s["key"]:
+            c["keys"] = dict(self.base_cfg.get("keys") or {}, **{s["provider"]: s["key"]})
+        return c
+
+    @property
+    def slot_label(self) -> str:
+        s = self.slots[self._slot_i]
+        return f"API {self._slot_i + 1}/{len(self.slots)} ({s['provider']})"
+
     def reconfigure(self, cfg: dict):
-        self.cfg = cfg
-        self._key_i = 0
-        self._key_cool = {}
+        self._set_base(cfg)
         self._local_ready = False
         self.mode = cfg.get("tool_mode", "auto")
         self.client = None
@@ -299,7 +329,10 @@ class LLM:
                 return self._create_once(first, **kw)
             except _AllRateLimited:
                 if self._rotate_key():
-                    continue                       # same AI, next API key: no waiting
+                    continue                       # next API (key / provider): no waiting
+                if getattr(self, "_all_bad", False) and all(
+                        t - time.time() > 600 for i, t in self._slot_cool.items() if i != self._slot_i):
+                    raise RuntimeError("every API key was rejected (401) - check the keys in Settings") from None
                 r = self._emergency(kw, "every model is rate-limited")
                 if r is not None:
                     return r
@@ -344,6 +377,11 @@ class LLM:
                     log.warning("AI model %s is not available on this key (%s); using a backup model", selected,
                                 status)
                     continue
+                if status == 401:
+                    # this key is wrong / revoked: use the next API instead of stopping
+                    self._bad_slot = True
+                    if len(self.slots) > 1:
+                        raise _AllRateLimited() from exc
                 if status == 429:
                     daily = any(k in text for k in ("per day", "daily", "tokens per day", "requests per day", "tpd", "rpd"))
                     wait = self._retry_after(exc)
@@ -376,29 +414,42 @@ class LLM:
                            f"llm.backup_models in config.json")
 
     def _rotate_key(self) -> bool:
-        """Several keys for this provider: when one is rate-limited, carry on with the next free one."""
-        keys = getattr(self, "_keys", [])
-        if len(keys) < 2:
+        """Several APIs (keys and/or providers): when one is rate-limited or rejects the key, carry on with the
+        next one that's free - immediately, no waiting."""
+        bad = getattr(self, "_bad_slot", False)
+        self._bad_slot = False
+        self._all_bad = bad
+        if len(self.slots) < 2:
             return False
         now = time.time()
-        self._key_cool = getattr(self, "_key_cool", {})
-        self._key_cools = getattr(self, "_key_cools", {})
-        cur = self._key_i
-        self._key_cool[cur] = min((v for v in self._cool.values() if v > now), default=now + 60)
-        self._key_cools[cur] = dict(self._cool)          # remember this key's own model limits
-        for step in range(1, len(keys)):
-            nxt = (cur + step) % len(keys)
-            if self._key_cool.get(nxt, 0) <= now:
-                self._key_i = nxt
-                self._cool = {m: t for m, t in self._key_cools.get(nxt, {}).items() if t > now}
-                self._make_client()
-                log.warning("API key %d/%d is rate-limited; switching to key %d", cur + 1, len(keys), nxt + 1)
-                if self.on_status:
-                    try:
-                        self.on_status(f"rate limit on API key {cur + 1} - switched to key {nxt + 1} of {len(keys)}")
-                    except Exception:  # noqa: BLE001
-                        pass
-                return True
+        cur = self._slot_i
+        self._slot_cool[cur] = now + 3600 if bad else \
+            min((v for v in self._cool.values() if v > now), default=now + 60)
+        self._slot_cools[cur] = dict(self._cool)          # remember this API's own model limits
+        for step in range(1, len(self.slots)):
+            nxt = (cur + step) % len(self.slots)
+            if self._slot_cool.get(nxt, 0) > now:
+                continue
+            old = self.slot_label
+            self._slot_i = nxt
+            self.cfg = self._slot_cfg(nxt)
+            self._cool = {m: t for m, t in self._slot_cools.get(nxt, {}).items() if t > now}
+            self._available = None                       # other provider, other model list
+            self._local_ready = False
+            self.client = None
+            self._maybe_client()
+            if not self.client:
+                self._slot_cool[nxt] = now + 3600        # not usable (no key / no URL)
+                continue
+            why = "rejected the key" if bad else "is rate-limited"
+            log.warning("%s %s; switching to %s", old, why, self.slot_label)
+            if self.on_status:
+                try:
+                    self.on_status(f"{old} {why} - switched to {self.slot_label}")
+                except Exception:  # noqa: BLE001
+                    pass
+            self._all_bad = False
+            return True
         return False
 
     def _call(self, model, kw):
@@ -548,6 +599,7 @@ def bot_llm_config(llm_cfg: dict, override: dict | None) -> dict:
     cfg["provider"] = prov
     cfg["model"] = override.get("model", "")
     cfg["base_url"] = override.get("base_url", "")
+    cfg["pool"] = []                                      # a bot's own AI doesn't take turns with the main APIs
     cfg["api_key"] = ""                                   # never send one provider's key to another:
     # keys_for() picks this provider's own saved key(s) from llm.keys
     return cfg

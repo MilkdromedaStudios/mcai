@@ -56,6 +56,7 @@ DEFAULTS: dict = {
             "logic": "openai/gpt-oss-120b",
             "fallback": "qwen/qwen3.8-27b",
         },
+        "pool": [],                  # AI APIs that take turns (Settings tabs): [{"provider","key","model","base_url"}]
         "keys": {},                  # saved API key per provider, e.g. {"groq": "...", "gemini": "..."}
         "litellm": {"auto_start": True, "port": 4000},   # PyFlayer starts/stops the LiteLLM router itself
         "emergency_fallbacks": [],   # other AIs to use at once if the main one is rate-limited or down,

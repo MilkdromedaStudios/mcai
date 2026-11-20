@@ -75,6 +75,6 @@ def llm_config(cfg, progress=log.info) -> dict:
         model = prepare_ollama(base, model, threads, int(s["gpu_layers"]), int(s["context"]))
     llm = dict(cfg["llm"])
     llm.update({"provider": prov, "base_url": base, "model": model, "api_key": "",
-                "backup_models": [], "max_tokens": int(s["max_tokens"]), "timeout": 300,
+                "backup_models": [], "pool": [], "max_tokens": int(s["max_tokens"]), "timeout": 300,
                 "local_limits": {"min_interval_s": float(s["min_interval_s"]), "max_tokens": int(s["max_tokens"])}})
     return llm
