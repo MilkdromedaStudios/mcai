@@ -184,6 +184,13 @@ class Theme:
                 (f"{orient}.Scrollbar.thumb", {"expand": "1", "sticky": "nsew"})]})])
             s.configure(f"{orient}.TScrollbar", width=T, arrowsize=T, gripcount=0)
 
+        # ---- tabs
+        s.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        s.configure("TNotebook.Tab", background=SURFACE2, foreground=MUTED, padding=(12, 6), borderwidth=0,
+                    lightcolor=SURFACE2, bordercolor=BORDER)
+        s.map("TNotebook.Tab", background=[("selected", SURFACE), ("active", HOVER)],
+              foreground=[("selected", FG)], lightcolor=[("selected", ACCENT)])
+
         # plain Tk widgets (Text, Listbox, menus, dialogs)
         r = self.root
         for opt, val in (("*Text.Background", FIELD), ("*Text.Foreground", FG), ("*Text.selectBackground", ACCENT),
